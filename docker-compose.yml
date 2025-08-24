@@ -3,7 +3,7 @@ version: "3.8"
 services:
   api:
     build: .
-    container_name: photos-ml-api
+    container_name: muhyak-ai
     env_file: .env
     depends_on:
       - db
