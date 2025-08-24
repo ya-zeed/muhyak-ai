@@ -4,10 +4,6 @@ from services import face_service
 
 router = APIRouter()
 
-@router.get("/")
-def root():
-    return {"message": "Wedding Face Search API", "version": "1.0.0"}
-
 @router.get("/health")
 def health():
     return {

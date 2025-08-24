@@ -1,9 +1,10 @@
 import uuid, json
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Depends, Form
 from sqlalchemy.orm import Session
 
 from db import get_db
-from models import WeddingImage, FaceVector
+from models import WeddingImage, FaceVector, Celebration
 from schemas import ImageUploadResponse
 from utils import load_image_from_bytes, compress_image_bytes, calculate_file_hash
 from services import face_service, upload_to_s3, redis_client
@@ -14,7 +15,8 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 @router.post("", response_model=list[ImageUploadResponse])
 async def upload_wedding_photos(
         background_tasks: BackgroundTasks,
-        celebration_id: str = Form(...),
+        celebrant: str = Form(...),
+        photographer: str = Form(...),
         files: list[UploadFile] = File(...),
         db: Session = Depends(get_db),
 ):
@@ -35,10 +37,21 @@ async def upload_wedding_photos(
             ))
             continue
 
+        # get celebration by photographer and celebrant
+        celebration = db.query(Celebration).filter(
+            Celebration.celebrant == celebrant,
+            Celebration.photographer == photographer
+        ).first()
+
+        if not celebration:
+            raise HTTPException(404, "Celebration not found")
+
+        celebration_id = celebration.id
+
         # store in S3
-        orig_url = upload_to_s3(content, file.filename, file.content_type, celebration_id)
+        orig_url = upload_to_s3(content, file.filename, file.content_type, celebrant, photographer)
         comp_bytes = compress_image_bytes(content)
-        comp_url = upload_to_s3(comp_bytes, f"compressed_{uuid.uuid4()}.jpg", "image/jpeg", celebration_id)
+        comp_url = upload_to_s3(comp_bytes, f"compressed_{uuid.uuid4()}.jpg", "image/jpeg", celebrant, photographer)
 
         img = WeddingImage(
             filename=file.filename, file_path=orig_url,

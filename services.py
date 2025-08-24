@@ -17,10 +17,10 @@ _s3 = boto3.client(
 )
 
 
-def upload_to_s3(file_bytes: bytes, filename: str, content_type: str, celebration_id) -> str:
+def upload_to_s3(file_bytes: bytes, filename: str, content_type: str, celebrant: str, photographer: str) -> str:
     if not settings.AWS_S3_BUCKET:
         raise RuntimeError("AWS_S3_BUCKET not configured")
-    key = f"{celebration_id}/{uuid.uuid4()}_{filename}"
+    key = f"{photographer}/{celebrant}/{uuid.uuid4()}_{filename}"
     _s3.put_object(
         Bucket=settings.AWS_S3_BUCKET,
         Key=key,
