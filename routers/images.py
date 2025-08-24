@@ -8,7 +8,7 @@ from models import WeddingImage, FaceVector, Celebration
 
 router = APIRouter(prefix="/images", tags=["images"])
 
-@router.get("")
+@router.get("/{photographer}/{celebrant}")
 def list_images(skip: int = 0, limit: int = 100, status: str | None = None, celebrant: str = "", photographer: str = "", db: Session = Depends(get_db)):
     celebration = db.query(Celebration).filter(
         Celebration.celebrant == celebrant,
