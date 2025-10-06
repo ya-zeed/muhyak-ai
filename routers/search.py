@@ -1,19 +1,25 @@
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from db import get_db
-from models import FaceVector, WeddingImage
+from models import FaceVector, WeddingImage, Celebration
 from schemas import FaceSearchRequest, FaceSearchResponse
 from utils import load_image_from_bytes, cosine_similarity_search
 from services import face_service
+from sqlalchemy import and_
 
-router = APIRouter(prefix="/search", tags=["search"])
+
+router = APIRouter(prefix="/{photographer}/{celebrant}/search", tags=["search"])
+
 
 @router.post("", response_model=list[FaceSearchResponse])
 async def search_faces(
-    file: UploadFile = File(...),
-    request: FaceSearchRequest = Depends(),
-    db: Session = Depends(get_db),
+        file: UploadFile = File(...),
+        celebrant: str = "",
+        photographer: str = "",
+        request: FaceSearchRequest = Depends(),
+        db: Session = Depends(get_db),
 ):
     if not file.content_type.startswith("image/"):
         raise HTTPException(400, "File must be an image")
@@ -24,7 +30,16 @@ async def search_faces(
         raise HTTPException(400, "No faces detected in search image")
 
     best = max(faces, key=lambda x: x["quality_score"])
-    vectors = db.query(FaceVector).join(WeddingImage).filter(WeddingImage.processed == "completed").all()
+    vectors = (db.query(FaceVector).join(WeddingImage).filter(WeddingImage.processed == "completed")
+               .filter(
+        WeddingImage.celebration.has(
+            and_(
+                Celebration.celebrant == celebrant,
+                Celebration.photographer == photographer
+            )
+        )
+    )
+               .all())
     if not vectors:
         return []
 

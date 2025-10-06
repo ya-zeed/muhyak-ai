@@ -10,6 +10,13 @@ router = APIRouter(prefix="/celebrations", tags=["celebrations"])
 def create_celebrations(
         celebrant: str, photographer: str, db: Session = Depends(get_db)
 ):
+    existing = db.query(Celebration).filter(
+        Celebration.celebrant == celebrant,
+        Celebration.photographer == photographer
+    ).first()
+    if existing:
+        return {"message": "celebration already exists", "celebration_id": str(existing.id)}
+
     celebration = Celebration(
         celebrant=celebrant,
         photographer=photographer

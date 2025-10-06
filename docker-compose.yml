@@ -9,11 +9,7 @@ services:
       - db
       - redis
     ports:
-      - "3001:8000"
-    # For live code reload in dev, uncomment the next 2 lines and run uvicorn instead of gunicorn
-    volumes:
-      - .:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      - "3322:8000"
 
   db:
     image: postgres:15
@@ -29,9 +25,17 @@ services:
 
   redis:
     image: redis:7
-    container_name: photos-redis
+    container_name: muhyak-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+        test: [ "CMD", "redis-cli", "ping" ]
+        interval: 5s
+        timeout: 3s
+        retries: 10
 
 volumes:
   pg_data:
+  redis_data:
