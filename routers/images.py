@@ -31,7 +31,10 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
         .all()
     )
 
-    return [
+    total = db.query(WeddingImage).filter(WeddingImage.celebration_id == celebration.id).count()
+
+    return {
+        "data": [
         {
             "image_id": str(img.id),
             "filename": img.filename,
@@ -54,7 +57,9 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
             ]
         }
         for img in imgs
-    ]
+    ],
+        "total": total
+    }
 
 # @router.delete("/{image_id}")
 # def delete_image(image_id: str, db: Session = Depends(get_db)):

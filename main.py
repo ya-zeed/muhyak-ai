@@ -33,7 +33,7 @@ app.include_router(health.router)
 app.include_router(uploads.router)
 app.include_router(search.router)
 app.include_router(images.router)
-app.include_router(cluster.router)
+# app.include_router(cluster.router)
 app.include_router(celebrations.router)
 
 @app.on_event("startup")
