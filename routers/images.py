@@ -60,6 +60,35 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
     ],
         "total": total
     }
+    
+    
+@router.get("/by-face/{face_id}")
+def get_image_by_face(face_id: str, db: Session = Depends(get_db)):
+    face = db.query(FaceVector).options(selectinload(FaceVector.image)).filter(FaceVector.id == face_id).first()
+    if not face:
+        raise HTTPException(404, "Face not found")
+    img = face.image
+    return {
+        "image_id": str(img.id),
+        "filename": img.filename,
+        "upload_date": img.upload_date.isoformat(),
+        "faces_count": img.faces_count,
+        "processed": img.processed,
+        "high_quality_url": img.file_path,
+        "compressed_url": img.compressed_file_path,
+        "faces": [
+            {
+                "face_id": str(f.id),
+                "face_index": f.face_index,
+                "bbox": f.bbox,
+                "landmarks": f.landmarks,
+                "confidence": f.confidence,
+                "quality_score": f.quality_score,
+                "created_date": f.created_date.isoformat(),
+            }
+            for f in img.faces
+        ]
+    }
 
 # @router.delete("/{image_id}")
 # def delete_image(image_id: str, db: Session = Depends(get_db)):
