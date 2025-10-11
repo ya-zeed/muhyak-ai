@@ -16,11 +16,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- Pre-download InsightFace models into the image ----
 # (uses default cache: /root/.insightface/models)
-RUN python - <<'PY'
+RUN mkdir -p /root/.insightface/models && \
+    python - <<'PY'
 from insightface.app import FaceAnalysis
 a = FaceAnalysis(name="buffalo_l")
-a.prepare(ctx_id=0, det_size=(640,640))
-print("✅ InsightFace models cached.")
+a.prepare(ctx_id=-1, det_size=(640,640))
+print("✅ InsightFace model cached.")
 PY
 
 # Copy code last (better cache)
