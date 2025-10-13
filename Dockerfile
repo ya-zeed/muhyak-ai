@@ -30,4 +30,4 @@ COPY . /app
 EXPOSE 8000
 
 # Preload ensures init happens once in master, then forks
-CMD ["gunicorn","main:app","-w","2","-k","uvicorn.workers.UvicornWorker","--preload","-b","0.0.0.0:8000","--timeout","120"]
+CMD ["gunicorn","main:app","-w","4","-k","uvicorn.workers.UvicornWorker","--preload","-b","0.0.0.0:8000","--timeout","120"]

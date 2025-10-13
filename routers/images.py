@@ -89,6 +89,33 @@ def get_image_by_face(face_id: str, db: Session = Depends(get_db)):
             for f in img.faces
         ]
     }
+    
+@router.get("/{image_id}")
+def get_image(image_id: str, db: Session = Depends(get_db)):
+    img = db.query(WeddingImage).options(selectinload(WeddingImage.faces)).filter(WeddingImage.id == image_id).first()
+    if not img:
+        raise HTTPException(404, "Image not found")
+    return {
+        "image_id": str(img.id),
+        "filename": img.filename,
+        "upload_date": img.upload_date.isoformat(),
+        "faces_count": img.faces_count,
+        "processed": img.processed,
+        "high_quality_url": img.file_path,
+        "compressed_url": img.compressed_file_path,
+        "faces": [
+            {
+                "face_id": str(f.id),
+                "face_index": f.face_index,
+                "bbox": f.bbox,
+                "landmarks": f.landmarks,
+                "confidence": f.confidence,
+                "quality_score": f.quality_score,
+                "created_date": f.created_date.isoformat(),
+            }
+            for f in img.faces
+        ]
+    }
 
 # @router.delete("/{image_id}")
 # def delete_image(image_id: str, db: Session = Depends(get_db)):
