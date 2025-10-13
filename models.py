@@ -41,8 +41,11 @@ class WeddingImage(Base):
     faces_count: Mapped[int] = mapped_column(Integer, default=0)
     processed: Mapped[str] = mapped_column(String, default="pending")  # pending|processing|completed|failed
     extra_metadata: Mapped[str | None] = mapped_column(Text)
+    order_number: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    
     celebration: Mapped["Celebration"] = relationship(back_populates="images")
     faces: Mapped[list["FaceVector"]] = relationship(back_populates="image", cascade="all, delete-orphan")
+
 
 
 class FaceVector(Base):

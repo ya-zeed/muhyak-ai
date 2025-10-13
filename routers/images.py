@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Body, HTTPException, Depends, Path
 from sqlalchemy.orm import Session, selectinload
 
 from db import get_db
@@ -23,9 +23,15 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
         q = q.filter(WeddingImage.processed == status)
 
     q = q.filter(WeddingImage.celebration_id == celebration.id)
+    
+    q = q.options(selectinload(WeddingImage.faces)).order_by(
+        WeddingImage.order_number.is_(None),
+        WeddingImage.order_number.asc().nulls_last(),
+        WeddingImage.upload_date.asc()
+    )
+    
     imgs = (
         q.options(selectinload(WeddingImage.faces))
-        .order_by(WeddingImage.upload_date.asc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -43,6 +49,7 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
             "processed": img.processed,
             "high_quality_url": img.file_path,
             "compressed_url": img.compressed_file_path,
+            "order_number": img.order_number,
             "faces": [
                 {
                     "face_id": str(face.id),
@@ -116,6 +123,44 @@ def get_image(image_id: str, db: Session = Depends(get_db)):
             for f in img.faces
         ]
     }
+    
+    
+@router.patch("/{image_id}/order")
+def update_image_order(
+    photographer: str,
+    celebrant: str,
+    image_id: str = Path(...),
+    order_number: int = Body(..., embed=True),
+    db: Session = Depends(get_db),
+):
+    celebration = db.query(Celebration).filter(
+        Celebration.celebrant == celebrant,
+        Celebration.photographer == photographer
+    ).first()
+    if not celebration:
+        raise HTTPException(404, "Celebration not found")
+
+    image = (
+        db.query(WeddingImage)
+        .filter(
+            WeddingImage.id == image_id,
+            WeddingImage.celebration_id == celebration.id
+        )
+        .first()
+    )
+    if not image:
+        raise HTTPException(404, "Image not found")
+
+    image.order_number = order_number
+    db.commit()
+    db.refresh(image)
+
+    return {
+        "message": "Image order updated successfully",
+        "image_id": str(image.id),
+        "order_number": image.order_number
+    }
+
 
 # @router.delete("/{image_id}")
 # def delete_image(image_id: str, db: Session = Depends(get_db)):
