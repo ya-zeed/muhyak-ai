@@ -162,12 +162,12 @@ def update_image_order(
     }
 
 
-# @router.delete("/{image_id}")
-# def delete_image(image_id: str, db: Session = Depends(get_db)):
-#     img = db.get(WeddingImage, image_id)
-#     if not img:
-#         raise HTTPException(404, "Image not found")
-#     db.query(FaceVector).filter(FaceVector.image_id == image_id).delete()
-#     db.delete(img)
-#     db.commit()
-#     return {"message": "Image deleted successfully"}
+@router.delete("/{image_id}")
+def delete_image(image_id: str, db: Session = Depends(get_db)):
+    img = db.get(WeddingImage, image_id)
+    if not img:
+        raise HTTPException(404, "Image not found")
+    db.query(FaceVector).filter(FaceVector.image_id == image_id).delete()
+    db.delete(img)
+    db.commit()
+    return {"message": "Image deleted successfully"}
