@@ -9,7 +9,7 @@ services:
       - db
       - redis
     ports:
-      - "3322:8000"
+      - "127.0.0.1:3322:8000"
 
   rq-worker:
     build: .
@@ -28,7 +28,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
 
@@ -36,7 +36,7 @@ services:
     image: redis:7
     container_name: muhyak-redis
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
