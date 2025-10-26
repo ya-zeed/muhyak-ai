@@ -25,5 +25,8 @@ pydantic-settings>=2.2,<3.0
 
 gunicorn>=21,<22
 
+rq>=1.15,<2.0
+rq-dashboard>=0.7,<1.0
+
 # Optional perf
 # orjson>=3.9,<4.0

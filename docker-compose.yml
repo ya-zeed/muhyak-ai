@@ -11,6 +11,15 @@ services:
     ports:
       - "3322:8000"
 
+  rq-worker:
+    build: .
+    container_name: muhyak-rq-worker
+    command: python worker.py
+    env_file: .env
+    depends_on:
+      - redis
+      - api
+
   db:
     image: postgres:15
     container_name: photos-db
@@ -31,10 +40,10 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-        test: [ "CMD", "redis-cli", "ping" ]
-        interval: 5s
-        timeout: 3s
-        retries: 10
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   pg_data:
