@@ -20,12 +20,17 @@ queue = Queue("default", connection=conn)
 @router.post("/unprocessed")
 def reprocess_unprocessed(db: Session = Depends(get_db)):
     """
-    🧾 Queues all unprocessed or failed images for reprocessing using Redis RQ.
+    🧾 Queues all unprocessed images for reprocessing using Redis RQ.
     """
     images = (
-        db.query(WeddingImage)
-        .filter(or_(WeddingImage.processed == "failed", WeddingImage.processed == None))
-        .all()
+    db.query(WeddingImage)
+    .filter(
+        or_(
+            WeddingImage.processed != "completed",
+            WeddingImage.processed.is_(None),
+        )
+    )
+    .all()
     )
 
     count = 0
