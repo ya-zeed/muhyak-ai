@@ -3,7 +3,10 @@ from db import SessionLocal
 from routers.uploads import _process_image_faces
 from models import WeddingImage
 import requests
-from loguru import logger
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 def load_file_bytes(path: str):
     if path.startswith("http"):
