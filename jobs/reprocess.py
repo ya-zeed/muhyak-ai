@@ -27,6 +27,9 @@ def reprocess_image_job(image_id: str):
         return
 
     try:
+        if img.processed in ("completed"):
+            logger.info(f"⏭️ Skipping {img.filename} — already {img.processed}")
+            return
         logger.info(f"♻️ Reprocessing {img.filename}")
         content = load_file_bytes(img.path)
         _process_image_faces(db, img, content)
