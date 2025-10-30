@@ -9,6 +9,8 @@ services:
       - db
     ports:
       - "127.0.0.1:3322:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   rq-worker:
     build: .
@@ -24,6 +26,8 @@ services:
     command: rq-dashboard --redis-url redis://host.docker.internal:6379 --port 9181
     ports:
       - "9181:9181"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 
   db:
