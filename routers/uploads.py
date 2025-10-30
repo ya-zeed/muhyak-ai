@@ -1,3 +1,4 @@
+import os
 import uuid
 import json
 import logging
@@ -26,8 +27,8 @@ logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
-# 🔌 RQ setup
-redis_url = "redis://localhost:6379"
+# 🔌 RQ setup from environment
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_conn = redis.from_url(redis_url)
 queue = Queue("default", connection=redis_conn)
 
