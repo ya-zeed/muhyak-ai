@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential g++ make \
     libgl1 libglib2.0-0 libgomp1 \
-  && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -30,4 +30,4 @@ COPY . /app
 EXPOSE 8000
 
 # Preload ensures init happens once in master, then forks
-CMD ["gunicorn","main:app","-w","1","-k","uvicorn.workers.UvicornWorker","--preload","-b","0.0.0.0:8000","--timeout","120"]
+CMD ["gunicorn","main:app","-w","2","--threads", "2","-k","uvicorn.workers.UvicornWorker","--preload","-b","0.0.0.0:8000","--timeout","120"]
