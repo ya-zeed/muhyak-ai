@@ -7,10 +7,9 @@ services:
     env_file: .env
     depends_on:
       - db
+      - redis
     ports:
       - "127.0.0.1:3322:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   rq-worker:
     build: .
@@ -19,17 +18,28 @@ services:
     env_file: .env
     depends_on:
       - api
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - redis
 
   rq-dashboard:
     build: .
     container_name: muhyak-rq-dashboard
-    command: rq-dashboard --redis-url redis://host.docker.internal:6379 --port 9181
+    command: rq-dashboard --redis-url redis://redis:6379 --port 9181
     ports:
       - "9181:9181"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
+
+  redis:
+    image: redis:7
+    container_name: muhyak-redis
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 
   db:
