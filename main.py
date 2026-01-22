@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from config import settings
 from db import engine
 from models import Base
-from routers import health, reprocess, uploads, search, images, cluster, celebrations
+from routers import health, reprocess, uploads, search, images, cluster, celebrations, quality
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,6 +36,7 @@ app.include_router(images.router)
 # app.include_router(cluster.router)
 app.include_router(celebrations.router)
 app.include_router(reprocess.router)
+app.include_router(quality.router)
 
 @app.on_event("startup")
 def init_db():
