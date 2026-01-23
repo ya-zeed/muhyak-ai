@@ -19,18 +19,13 @@ from utils import (
     calculate_file_hash,
 )
 from services import face_service, upload_to_s3, redis_client
-import redis
-from rq import Queue
+from config import settings
+from jobs.dispatcher import dispatch_job
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/upload", tags=["upload"])
-
-# 🔌 RQ setup from environment
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-redis_conn = redis.from_url(redis_url)
-queue = Queue("default", connection=redis_conn)
 
 
 @router.post("", response_model=dict)
@@ -60,22 +55,22 @@ async def upload_wedding_photos(
     # Read file contents before responding
     file_contents = [await f.read() for f in files]
 
-    # Queue each file for async processing
+    # Queue each file for async processing using configured backend
     for content, filename in zip(file_contents, filenames):
-        queue.enqueue(
-            _handle_single_upload,
-            celebrant,
-            photographer,
-            filename,
-            content,
-            celebration.id,
+        dispatch_job(
+            "process_image",
+            celebrant=celebrant,
+            photographer=photographer,
+            filename=filename,
+            content=content,
+            celebration_id=str(celebration.id),
         )
 
     return {
         "status": "accepted",
         "count": len(files),
         "files": filenames,
-        "message": "Images accepted and queued for background processing.",
+        "message": f"Images accepted and queued for background processing via {settings.WORKER_BACKEND}.",
     }
 
 

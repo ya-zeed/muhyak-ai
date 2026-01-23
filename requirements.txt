@@ -28,5 +28,8 @@ gunicorn>=21,<22
 rq>=1.15,<2.0
 rq-dashboard>=0.7,<1.0
 
+# Optional: Modal serverless backend (install if WORKER_BACKEND=modal)
+# modal>=0.64,<1.0
+
 # Optional perf
 # orjson>=3.9,<4.0

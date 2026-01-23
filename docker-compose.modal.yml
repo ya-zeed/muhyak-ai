@@ -1,0 +1,80 @@
+version: "3.8"
+
+# Docker Compose for Modal backend (no local workers needed)
+# Usage: docker-compose -f docker-compose.modal.yml up -d
+#
+# Prerequisites:
+#   1. Set WORKER_BACKEND=modal in your .env file
+#   2. Deploy Modal worker: modal deploy modal_worker.py
+#   3. Create Modal secret "muhyak-env" with your environment variables
+
+services:
+  api:
+    build: .
+    container_name: muhyak-ai
+    env_file: .env
+    environment:
+      - WORKER_BACKEND=modal
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3322:8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # No rq-worker needed - Modal handles processing serverlessly!
+
+  redis:
+    image: redis:7-alpine
+    container_name: muhyak-redis
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  db:
+    image: postgres:15-alpine
+    container_name: photos-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  pg_data:
+  redis_data:

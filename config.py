@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     DET_SIZE_W: int = 320  # Reduced from 640 for faster detection
     DET_SIZE_H: int = 320  # Reduced from 640 for faster detection
 
+    # Worker backend: "rq" (Redis Queue, self-hosted) or "modal" (serverless, pay-per-use)
+    WORKER_BACKEND: str = "rq"
+    # Modal settings (only used when WORKER_BACKEND=modal)
+    MODAL_APP_NAME: str = "muhyak-face-processor"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

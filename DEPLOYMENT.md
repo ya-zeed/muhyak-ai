@@ -2,6 +2,29 @@
 
 This guide covers multiple deployment strategies from cheapest to most scalable.
 
+## Configurable Worker Backend
+
+The application supports two worker backends, configured via `WORKER_BACKEND` environment variable:
+
+| Backend | Description | Best For |
+|---------|-------------|----------|
+| `rq` | Redis Queue with local workers | Fixed costs, self-hosted |
+| `modal` | Modal.com serverless | Pay-per-use, auto-scaling |
+
+### Quick Switch
+
+```bash
+# Use local RQ workers (default)
+WORKER_BACKEND=rq
+docker-compose up -d
+
+# Use Modal serverless (no local workers needed)
+WORKER_BACKEND=modal
+docker-compose -f docker-compose.modal.yml up -d
+```
+
+---
+
 ## Quick Reference: Cost Comparison
 
 | Option | Monthly Cost | Concurrent Users | Setup Complexity |
@@ -150,9 +173,10 @@ User Request ──────▶│   (API Only)    │
 
 ---
 
-## Option 3: Modal.com (Easiest Serverless)
+## Option 3: Modal.com (Easiest Serverless) - RECOMMENDED
 
 Modal is the easiest way to run ML workloads serverlessly with minimal code changes.
+**The application has built-in Modal support - just configure and deploy!**
 
 ### Why Modal?
 - Built specifically for ML workloads
@@ -160,49 +184,94 @@ Modal is the easiest way to run ML workloads serverlessly with minimal code chan
 - Pay per second of compute
 - Very easy Python SDK
 - Cold start: ~2 seconds
+- **Already integrated** - just set `WORKER_BACKEND=modal`
 
 ### Estimated Costs
 - ~$0.002-0.01 per image
 - Free tier: $30/month credits
 - No idle costs
 
-### Setup
+### Setup (5 minutes)
 
-1. **Install Modal**:
+**Step 1: Install Modal CLI**
 ```bash
 pip install modal
-modal token new
+modal token new  # Opens browser for authentication
 ```
 
-2. **Create `modal_worker.py`**:
+**Step 2: Create Modal Secret**
+
+Go to [Modal Dashboard](https://modal.com/secrets) and create a secret named `muhyak-env` with these variables:
+```
+DATABASE_URL=postgresql+psycopg://user:pass@your-db-host:5432/wedding_faces
+REDIS_URL=redis://your-redis-host:6379
+AWS_ACCESS_KEY_ID=your_key
+AWS_SECRET_ACCESS_KEY=your_secret
+AWS_S3_BUCKET=your-bucket
+AWS_REGION=nyc3
+S3_ENDPOINT=https://nyc3.digitaloceanspaces.com
+```
+
+**Step 3: Deploy Modal Worker**
+```bash
+modal deploy modal_worker.py
+```
+
+**Step 4: Update Your .env**
+```bash
+# Switch to Modal backend
+WORKER_BACKEND=modal
+MODAL_APP_NAME=muhyak-face-processor
+```
+
+**Step 5: Start API (without local workers)**
+```bash
+docker-compose -f docker-compose.modal.yml up -d
+```
+
+That's it! Your API now dispatches jobs to Modal's serverless infrastructure.
+
+### How It Works
+
+```
+User Request ──▶ API (VPS) ──▶ Modal Function (Serverless)
+                    │                    │
+                    ▼                    ▼
+              PostgreSQL ◀────────── Process Image
+                    │                    │
+                    ▼                    ▼
+                 Redis ◀──────────── Cache Results
+```
+
+### Modal Functions Deployed
+
+The `modal_worker.py` includes three functions:
+
+| Function | Purpose | Resources |
+|----------|---------|-----------|
+| `process_image` | Face detection + S3 upload | 2GB RAM, 2 CPU |
+| `analyze_quality` | Quality analysis batch | 2GB RAM, 2 CPU |
+| `reprocess_image` | Re-run face detection | 2GB RAM, 2 CPU |
+
+### Example: Legacy Code Reference
+
+If you need to customize, here's a minimal Modal function:
 
 ```python
 import modal
 
-# Define the container image with all dependencies
 image = modal.Image.debian_slim(python_version="3.11").apt_install(
     "libgl1", "libglib2.0-0", "libgomp1"
 ).pip_install(
     "insightface>=0.7,<0.9",
     "onnxruntime>=1.17,<2.0",
     "opencv-python-headless>=4.9,<4.11",
-    "numpy>=1.26,<3.0",
-    "pillow>=10.3,<11.0",
-    "boto3>=1.34,<2.0",
-    "redis>=5.0,<6.0",
-).run_commands(
-    "python -c \"from insightface.app import FaceAnalysis; a = FaceAnalysis(name='buffalo_s'); a.prepare(ctx_id=-1, det_size=(320,320))\""
 )
 
 app = modal.App("muhyak-face-processor", image=image)
 
-@app.function(
-    memory=2048,  # 2GB RAM
-    cpu=2.0,
-    timeout=300,
-    retries=2,
-)
-def process_image(image_bytes: bytes, image_id: str, config: dict):
+@app.function(memory=2048, cpu=2.0, timeout=300)
+def process_image(image_bytes: bytes, image_id: str):
     """Process a single image for face detection."""
     import cv2
     import numpy as np
