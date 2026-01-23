@@ -79,15 +79,15 @@ def _dispatch_rq(job_type: str, **kwargs) -> str:
 def _dispatch_modal(job_type: str, **kwargs) -> str:
     """Dispatch job to Modal serverless functions."""
     try:
-        from modal import Function
+        import modal
     except ImportError:
         raise RuntimeError("Modal is not installed. Run: pip install modal")
 
     app_name = settings.MODAL_APP_NAME
 
     if job_type == "process_image":
-        # Call the Modal function - Modal 1.x syntax
-        process_fn = Function.lookup(app_name, "process_image")
+        # Call the Modal function - Modal 1.x syntax uses from_name()
+        process_fn = modal.Function.from_name(app_name, "process_image")
         # spawn() returns immediately, runs in background
         call = process_fn.spawn(
             image_bytes=kwargs.get("content"),
@@ -101,7 +101,7 @@ def _dispatch_modal(job_type: str, **kwargs) -> str:
         return job_id
 
     elif job_type == "quality_analysis":
-        analyze_fn = Function.lookup(app_name, "analyze_quality")
+        analyze_fn = modal.Function.from_name(app_name, "analyze_quality")
         call = analyze_fn.spawn(
             celebration_id=kwargs.get("celebration_id"),
             threshold=kwargs.get("threshold", 0.70),
@@ -112,7 +112,7 @@ def _dispatch_modal(job_type: str, **kwargs) -> str:
         return job_id
 
     elif job_type == "reprocess_image":
-        reprocess_fn = Function.lookup(app_name, "reprocess_image")
+        reprocess_fn = modal.Function.from_name(app_name, "reprocess_image")
         call = reprocess_fn.spawn(image_id=kwargs.get("image_id"))
         job_id = call.object_id
         logger.info(f"[Modal] Dispatched reprocess_image job: {job_id}")
