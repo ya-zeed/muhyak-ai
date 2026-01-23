@@ -551,6 +551,13 @@ def analyze_quality(
             conf = 0.0
         return is_over, conf
 
+    # Initialize S3 client and imports
+    import cv2
+    import numpy as np
+
+    s3 = get_s3_client()
+    bucket = os.environ.get("AWS_S3_BUCKET")
+
     try:
         celeb_uuid = uuid.UUID(celebration_id)
 
