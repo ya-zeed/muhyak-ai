@@ -62,7 +62,13 @@ async def search_faces(
         return []
 
     cand = [fv.vector for fv in vectors]
-    sims = cosine_similarity_search(best["vector"], cand, threshold=0.5)
+
+    # Debug: check similarity scores before filtering
+    from sklearn.metrics.pairwise import cosine_similarity
+    all_sims = cosine_similarity([best["vector"]], cand)[0]
+    logger.info(f"📈 Similarity scores - min: {all_sims.min():.3f}, max: {all_sims.max():.3f}, mean: {all_sims.mean():.3f}")
+
+    sims = cosine_similarity_search(best["vector"], cand, threshold=request.threshold)
     logger.info(f"🎯 Found {len(sims)} matches above threshold {request.threshold}")
 
     results: list[FaceSearchResponse] = []
