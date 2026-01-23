@@ -44,7 +44,7 @@ image = (
 app = modal.App("muhyak-face-processor", image=image)
 
 # Load secrets from Modal
-secrets = [modal.Secret.from_name("muhyak-env")]
+secrets = [modal.Secret.from_name("muhyak")]
 
 
 # Shared setup for database and S3
