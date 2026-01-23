@@ -14,6 +14,9 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Modal for serverless backend support
+RUN pip install --no-cache-dir modal>=0.64,<1.0
+
 # ---- Pre-download InsightFace models into the image ----
 # Download both models so you can switch via INSIGHTFACE_MODEL env var
 # buffalo_s: Fast model (~2-3x faster, good for most use cases)
