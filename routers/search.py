@@ -62,7 +62,7 @@ async def search_faces(
         return []
 
     cand = [fv.vector for fv in vectors]
-    sims = cosine_similarity_search(best["vector"], cand, threshold=request.threshold)
+    sims = cosine_similarity_search(best["vector"], cand, threshold=0.5)
     logger.info(f"🎯 Found {len(sims)} matches above threshold {request.threshold}")
 
     results: list[FaceSearchResponse] = []
