@@ -13,7 +13,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
 
   # Scale workers horizontally: docker-compose up --scale rq-worker=4
   rq-worker:
