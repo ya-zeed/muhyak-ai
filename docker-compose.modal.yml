@@ -62,6 +62,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: >
+      postgres
+      -c max_connections=300
+      -c shared_buffers=128MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=256MB
     ports:
       - "0.0.0.0:5433:5432"  # WARNING: Exposed to internet! Use strong password!
     volumes:
