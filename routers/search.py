@@ -63,6 +63,13 @@ async def search_faces(
 
     cand = [fv.vector for fv in vectors]
 
+    # Debug: check vector dimensions and sample values
+    import numpy as np
+    query_vec = np.array(best["vector"])
+    db_vec = np.array(cand[0])
+    logger.info(f"🔬 Query vector: len={len(query_vec)}, norm={np.linalg.norm(query_vec):.3f}, sample={query_vec[:3]}")
+    logger.info(f"🔬 DB vector[0]: len={len(db_vec)}, norm={np.linalg.norm(db_vec):.3f}, sample={db_vec[:3]}")
+
     # Debug: check similarity scores before filtering
     from sklearn.metrics.pairwise import cosine_similarity
     all_sims = cosine_similarity([best["vector"]], cand)[0]

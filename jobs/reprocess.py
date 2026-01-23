@@ -1,7 +1,6 @@
-import redis
 from db import SessionLocal
 from routers.uploads import _process_image_faces
-from models import WeddingImage
+from models import WeddingImage, FaceVector
 import requests
 import logging
 
@@ -19,20 +18,28 @@ def load_file_bytes(path: str):
 def reprocess_image_job(image_id: str):
     """
     Called by the RQ worker to reprocess one image.
+    Deletes old face vectors and regenerates with current model.
     """
     db = SessionLocal()
-    img = db.query(WeddingImage).filter_by(id=image_id).first()
-    if not img:
-        logger.warning(f"⚠️ Image {image_id} not found in DB")
-        return
-
     try:
-        if img.processed in ("completed"):
-            logger.info(f"⏭️ Skipping {img.filename} — already {img.processed}")
+        img = db.query(WeddingImage).filter_by(id=image_id).first()
+        if not img:
+            logger.warning(f"⚠️ Image {image_id} not found in DB")
             return
+
         logger.info(f"♻️ Reprocessing {img.filename}")
-        content = load_file_bytes(img.path)
+
+        # Delete old face vectors
+        deleted = db.query(FaceVector).filter(FaceVector.image_id == img.id).delete()
+        logger.info(f"🗑️ Deleted {deleted} old face vectors")
+
+        # Use compressed URL if available, otherwise original
+        file_url = img.compressed_file_path or img.file_path
+        content = load_file_bytes(file_url)
+
         _process_image_faces(db, img, content)
         logger.info(f"✅ Completed reprocessing {img.filename}")
     except Exception as e:
         logger.exception(f"❌ Error reprocessing {img.filename}: {e}")
+    finally:
+        db.close()
