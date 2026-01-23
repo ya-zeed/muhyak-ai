@@ -319,90 +319,30 @@ def process_image(
 
 
 @app.function(
-    memory=2048,
-    cpu=2.0,
-    timeout=600,
+    memory=1024,
+    cpu=1.0,
+    timeout=120,
     secrets=secrets,
     retries=1,
 )
-def analyze_quality(
-    celebration_id: str,
+def analyze_single_image(
+    image_id: str,
+    file_path: str,
     threshold: float = 0.70,
-    reanalyze: bool = False,
 ) -> dict:
-    """
-    Analyze all images in a celebration for quality issues.
-    Modal equivalent of analyze_celebration_job.
-    """
+    """Analyze a single image for quality issues. Called in parallel."""
     import os
-    import uuid
     import logging
     import cv2
     import numpy as np
-    from datetime import datetime
-    from io import BytesIO
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    db = get_db_session()
     s3 = get_s3_client()
     bucket = os.environ.get("AWS_S3_BUCKET")
 
-    # Import models inline
-    from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, ARRAY
-    from sqlalchemy.dialects.postgresql import UUID as PGUUID
-    from sqlalchemy.orm import declarative_base
-    import uuid as uuid_lib
-
-    Base = declarative_base()
-
-    class Celebration(Base):
-        __tablename__ = "celebrations"
-        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
-        celebrant = Column(String, nullable=False)
-        photographer = Column(String, nullable=False)
-
-    class WeddingImage(Base):
-        __tablename__ = "wedding_images"
-        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
-        celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
-        filename = Column(String, nullable=False)
-        file_path = Column(String, nullable=False)
-        compressed_file_path = Column(String)
-        quality_analyzed = Column(Boolean, default=False)
-
-    class FaceVector(Base):
-        __tablename__ = "face_vectors"
-        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
-        image_id = Column(PGUUID(as_uuid=True), nullable=False)
-        landmarks = Column(ARRAY(Float))
-        bbox = Column(ARRAY(Float))
-
-    class QualityAnalysisJob(Base):
-        __tablename__ = "quality_analysis_jobs"
-        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
-        celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
-        total_images = Column(Integer, default=0)
-        processed_count = Column(Integer, default=0)
-        flagged_count = Column(Integer, default=0)
-        status = Column(String, default="pending")
-        threshold = Column(Float, default=0.70)
-        started_at = Column(DateTime, default=datetime.utcnow)
-        completed_at = Column(DateTime)
-        error_message = Column(String)
-
-    class ImageQualityFlag(Base):
-        __tablename__ = "image_quality_flags"
-        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
-        image_id = Column(PGUUID(as_uuid=True), nullable=False)
-        issue_type = Column(String, nullable=False)
-        confidence = Column(Float, nullable=False)
-        reviewed = Column(Boolean, default=False)
-        dismissed = Column(Boolean, default=False)
-        created_at = Column(DateTime, default=datetime.utcnow)
-
-    # Quality detection functions (inline)
+    # Quality detection functions
     def detect_blur(image, thresh=100.0):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         var = cv2.Laplacian(gray, cv2.CV_64F).var()
@@ -450,6 +390,107 @@ def analyze_quality(
         return is_over, conf
 
     try:
+        key = extract_s3_key(file_path)
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        img_bytes = resp["Body"].read()
+
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if image_bgr is None:
+            return {"image_id": image_id, "issues": [], "error": "decode_failed"}
+
+        issues = []
+
+        is_blurry, blur_conf = detect_blur(image_bgr)
+        if is_blurry and blur_conf >= threshold:
+            issues.append(("blur", blur_conf))
+
+        has_motion, motion_conf = detect_motion_blur(image_bgr)
+        if has_motion and motion_conf >= threshold:
+            issues.append(("motion_blur", motion_conf))
+
+        is_under, under_conf = detect_underexposed(image_bgr)
+        if is_under and under_conf >= threshold:
+            issues.append(("underexposed", under_conf))
+
+        is_over, over_conf = detect_overexposed(image_bgr)
+        if is_over and over_conf >= threshold:
+            issues.append(("overexposed", over_conf))
+
+        return {"image_id": image_id, "issues": issues, "error": None}
+
+    except Exception as e:
+        logger.error(f"Error analyzing {image_id}: {e}")
+        return {"image_id": image_id, "issues": [], "error": str(e)}
+
+
+@app.function(
+    memory=512,
+    cpu=0.5,
+    timeout=900,
+    secrets=secrets,
+    retries=1,
+)
+def analyze_quality(
+    celebration_id: str,
+    threshold: float = 0.70,
+    reanalyze: bool = False,
+) -> dict:
+    """
+    Analyze all images in a celebration for quality issues.
+    Uses parallel processing - each image analyzed in separate container.
+    """
+    import uuid
+    import logging
+    from datetime import datetime
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    db = get_db_session()
+
+    # Import models inline
+    from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ForeignKey, ARRAY
+    from sqlalchemy.dialects.postgresql import UUID as PGUUID
+    from sqlalchemy.orm import declarative_base
+    import uuid as uuid_lib
+
+    Base = declarative_base()
+
+    class WeddingImage(Base):
+        __tablename__ = "wedding_images"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
+        filename = Column(String, nullable=False)
+        file_path = Column(String, nullable=False)
+        compressed_file_path = Column(String)
+        quality_analyzed = Column(Boolean, default=False)
+
+    class QualityAnalysisJob(Base):
+        __tablename__ = "quality_analysis_jobs"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
+        total_images = Column(Integer, default=0)
+        processed_count = Column(Integer, default=0)
+        flagged_count = Column(Integer, default=0)
+        status = Column(String, default="pending")
+        threshold = Column(Float, default=0.70)
+        started_at = Column(DateTime, default=datetime.utcnow)
+        completed_at = Column(DateTime)
+        error_message = Column(String)
+
+    class ImageQualityFlag(Base):
+        __tablename__ = "image_quality_flags"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        image_id = Column(PGUUID(as_uuid=True), nullable=False)
+        issue_type = Column(String, nullable=False)
+        confidence = Column(Float, nullable=False)
+        reviewed = Column(Boolean, default=False)
+        dismissed = Column(Boolean, default=False)
+        created_at = Column(DateTime, default=datetime.utcnow)
+
+    try:
         celeb_uuid = uuid.UUID(celebration_id)
 
         # Get images to analyze
@@ -458,7 +499,7 @@ def analyze_quality(
             query = query.filter(WeddingImage.quality_analyzed == False)
         images = query.all()
 
-        # Create/update job
+        # Create job record
         job = QualityAnalysisJob(
             celebration_id=celeb_uuid,
             total_images=len(images),
@@ -475,64 +516,53 @@ def analyze_quality(
             db.commit()
             return {"status": "completed", "processed": 0, "flagged": 0}
 
+        # Prepare arguments for parallel processing
+        image_args = [
+            (str(img.id), img.compressed_file_path or img.file_path, threshold)
+            for img in images
+        ]
+
+        logger.info(f"Starting parallel analysis of {len(images)} images...")
+
+        # Process images in parallel using starmap
+        results = list(analyze_single_image.starmap(image_args))
+
+        # Collect results and save to database
         processed = 0
         flagged = 0
 
-        for img in images:
-            try:
-                file_path = img.compressed_file_path or img.file_path
-                key = extract_s3_key(file_path)
+        for result in results:
+            image_id = result.get("image_id")
+            issues = result.get("issues", [])
 
-                resp = s3.get_object(Bucket=bucket, Key=key)
-                img_bytes = resp["Body"].read()
-
-                nparr = np.frombuffer(img_bytes, np.uint8)
-                image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                if image_bgr is None:
-                    processed += 1
-                    continue
-
-                issues = []
-
-                is_blurry, blur_conf = detect_blur(image_bgr)
-                if is_blurry and blur_conf >= threshold:
-                    issues.append(("blur", blur_conf))
-
-                has_motion, motion_conf = detect_motion_blur(image_bgr)
-                if has_motion and motion_conf >= threshold:
-                    issues.append(("motion_blur", motion_conf))
-
-                is_under, under_conf = detect_underexposed(image_bgr)
-                if is_under and under_conf >= threshold:
-                    issues.append(("underexposed", under_conf))
-
-                is_over, over_conf = detect_overexposed(image_bgr)
-                if is_over and over_conf >= threshold:
-                    issues.append(("overexposed", over_conf))
-
+            if result.get("error"):
+                logger.error(f"Error for {image_id}: {result['error']}")
+            else:
+                processed += 1
                 if issues:
                     flagged += 1
                     for issue_type, conf in issues:
                         flag = ImageQualityFlag(
-                            image_id=img.id,
+                            image_id=uuid.UUID(image_id),
                             issue_type=issue_type,
                             confidence=conf,
                         )
                         db.add(flag)
 
-                img.quality_analyzed = True
-                processed += 1
+                # Mark image as analyzed
+                img_record = db.query(WeddingImage).filter(
+                    WeddingImage.id == uuid.UUID(image_id)
+                ).first()
+                if img_record:
+                    img_record.quality_analyzed = True
 
-                if processed % 10 == 0:
-                    job.processed_count = processed
-                    job.flagged_count = flagged
-                    db.commit()
+            # Update progress every 50 images
+            if processed % 50 == 0:
+                job.processed_count = processed
+                job.flagged_count = flagged
+                db.commit()
 
-            except Exception as e:
-                logger.error(f"Error analyzing {img.id}: {e}")
-                continue
-
+        # Final update
         job.processed_count = processed
         job.flagged_count = flagged
         job.status = "completed"
