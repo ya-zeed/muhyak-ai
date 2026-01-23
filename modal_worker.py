@@ -441,6 +441,7 @@ def analyze_quality(
     Analyze all images in a celebration for quality issues.
     Uses parallel processing - each image analyzed in separate container.
     """
+    import os
     import uuid
     import logging
     from datetime import datetime
@@ -458,6 +459,12 @@ def analyze_quality(
 
     Base = declarative_base()
 
+    class Celebration(Base):
+        __tablename__ = "celebrations"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        celebrant = Column(String, nullable=False)
+        photographer = Column(String, nullable=False)
+
     class WeddingImage(Base):
         __tablename__ = "wedding_images"
         id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
@@ -466,6 +473,13 @@ def analyze_quality(
         file_path = Column(String, nullable=False)
         compressed_file_path = Column(String)
         quality_analyzed = Column(Boolean, default=False)
+
+    class FaceVector(Base):
+        __tablename__ = "face_vectors"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        image_id = Column(PGUUID(as_uuid=True), nullable=False)
+        landmarks = Column(ARRAY(Float))
+        bbox = Column(ARRAY(Float))
 
     class QualityAnalysisJob(Base):
         __tablename__ = "quality_analysis_jobs"
@@ -490,6 +504,53 @@ def analyze_quality(
         dismissed = Column(Boolean, default=False)
         created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Quality detection functions (inline)
+    def detect_blur(image, thresh=100.0):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        is_blurry = var < thresh
+        conf = 1.0 - min(var / thresh, 1.0) if is_blurry else 0.0
+        return is_blurry, conf
+
+    def detect_motion_blur(image, thresh=0.7):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        f = np.fft.fft2(gray)
+        fshift = np.fft.fftshift(f)
+        mag = np.abs(fshift)
+        h, w = mag.shape
+        ch, cw = h // 2, w // 2
+        hband = mag[ch-5:ch+5, :].sum()
+        vband = mag[:, cw-5:cw+5].sum()
+        ratio = max(hband, vband) / (min(hband, vband) + 1e-10)
+        has_blur = ratio > (1 / thresh) if thresh > 0 else False
+        conf = min(ratio / 3.0, 1.0) if has_blur else 0.0
+        return has_blur, conf
+
+    def detect_underexposed(image, bright_thresh=50.0, dark_ratio_thresh=0.5):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        mean_bright = gray.mean()
+        dark_ratio = np.sum(gray < 30) / gray.size
+        is_under = mean_bright < bright_thresh or dark_ratio > dark_ratio_thresh
+        if is_under:
+            conf = max(1.0 - min(mean_bright / bright_thresh, 1.0),
+                      min(dark_ratio / dark_ratio_thresh, 1.0) if dark_ratio_thresh > 0 else 0)
+        else:
+            conf = 0.0
+        return is_under, conf
+
+    def detect_overexposed(image, bright_thresh=205.0, clip_thresh=0.1):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        mean_bright = gray.mean()
+        clip_ratio = np.sum(gray > 250) / gray.size
+        is_over = mean_bright > bright_thresh or clip_ratio > clip_thresh
+        if is_over:
+            bf = min((mean_bright - bright_thresh) / (255 - bright_thresh), 1.0) if mean_bright > bright_thresh else 0
+            rf = min(clip_ratio / clip_thresh, 1.0) if clip_thresh > 0 else 0
+            conf = max(bf, rf)
+        else:
+            conf = 0.0
+        return is_over, conf
+
     try:
         celeb_uuid = uuid.UUID(celebration_id)
 
@@ -499,7 +560,7 @@ def analyze_quality(
             query = query.filter(WeddingImage.quality_analyzed == False)
         images = query.all()
 
-        # Create job record
+        # Create/update job
         job = QualityAnalysisJob(
             celebration_id=celeb_uuid,
             total_images=len(images),
@@ -516,53 +577,64 @@ def analyze_quality(
             db.commit()
             return {"status": "completed", "processed": 0, "flagged": 0}
 
-        # Prepare arguments for parallel processing
-        image_args = [
-            (str(img.id), img.compressed_file_path or img.file_path, threshold)
-            for img in images
-        ]
-
-        logger.info(f"Starting parallel analysis of {len(images)} images...")
-
-        # Process images in parallel using starmap
-        results = list(analyze_single_image.starmap(image_args))
-
-        # Collect results and save to database
         processed = 0
         flagged = 0
 
-        for result in results:
-            image_id = result.get("image_id")
-            issues = result.get("issues", [])
+        for img in images:
+            try:
+                file_path = img.compressed_file_path or img.file_path
+                key = extract_s3_key(file_path)
 
-            if result.get("error"):
-                logger.error(f"Error for {image_id}: {result['error']}")
-            else:
-                processed += 1
+                resp = s3.get_object(Bucket=bucket, Key=key)
+                img_bytes = resp["Body"].read()
+
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                if image_bgr is None:
+                    processed += 1
+                    continue
+
+                issues = []
+
+                is_blurry, blur_conf = detect_blur(image_bgr)
+                if is_blurry and blur_conf >= threshold:
+                    issues.append(("blur", blur_conf))
+
+                has_motion, motion_conf = detect_motion_blur(image_bgr)
+                if has_motion and motion_conf >= threshold:
+                    issues.append(("motion_blur", motion_conf))
+
+                is_under, under_conf = detect_underexposed(image_bgr)
+                if is_under and under_conf >= threshold:
+                    issues.append(("underexposed", under_conf))
+
+                is_over, over_conf = detect_overexposed(image_bgr)
+                if is_over and over_conf >= threshold:
+                    issues.append(("overexposed", over_conf))
+
                 if issues:
                     flagged += 1
                     for issue_type, conf in issues:
                         flag = ImageQualityFlag(
-                            image_id=uuid.UUID(image_id),
+                            image_id=img.id,
                             issue_type=issue_type,
                             confidence=conf,
                         )
                         db.add(flag)
 
-                # Mark image as analyzed
-                img_record = db.query(WeddingImage).filter(
-                    WeddingImage.id == uuid.UUID(image_id)
-                ).first()
-                if img_record:
-                    img_record.quality_analyzed = True
+                img.quality_analyzed = True
+                processed += 1
 
-            # Update progress every 50 images
-            if processed % 50 == 0:
-                job.processed_count = processed
-                job.flagged_count = flagged
-                db.commit()
+                if processed % 10 == 0:
+                    job.processed_count = processed
+                    job.flagged_count = flagged
+                    db.commit()
 
-        # Final update
+            except Exception as e:
+                logger.error(f"Error analyzing {img.id}: {e}")
+                continue
+
         job.processed_count = processed
         job.flagged_count = flagged
         job.status = "completed"
