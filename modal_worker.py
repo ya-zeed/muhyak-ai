@@ -82,6 +82,23 @@ def get_redis_client():
     return redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"), decode_responses=True)
 
 
+def extract_s3_key(file_path: str) -> str:
+    """
+    Extract S3 key from various URL formats:
+    - https://bucket.region.cdn.digitaloceanspaces.com/path/to/file.jpg
+    - https://bucket.region.digitaloceanspaces.com/path/to/file.jpg
+    - https://bucket.s3.region.amazonaws.com/path/to/file.jpg
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(file_path)
+    # Remove leading slash from path
+    key = parsed.path.lstrip("/")
+    # Remove query string if present
+    key = key.split("?")[0]
+    return key
+
+
 @app.function(
     memory=2048,
     cpu=2.0,
@@ -464,10 +481,7 @@ def analyze_quality(
         for img in images:
             try:
                 file_path = img.compressed_file_path or img.file_path
-                if bucket in file_path:
-                    key = file_path.split(bucket + "/")[-1].split("?")[0]
-                else:
-                    key = "/".join(file_path.split("/")[-2:]).split("?")[0]
+                key = extract_s3_key(file_path)
 
                 resp = s3.get_object(Bucket=bucket, Key=key)
                 img_bytes = resp["Body"].read()
@@ -599,10 +613,7 @@ def reprocess_image(image_id: str) -> dict:
 
         # Download from S3
         file_path = img.compressed_file_path or img.file_path
-        if bucket in file_path:
-            key = file_path.split(bucket + "/")[-1].split("?")[0]
-        else:
-            key = "/".join(file_path.split("/")[-2:]).split("?")[0]
+        key = extract_s3_key(file_path)
 
         resp = s3.get_object(Bucket=bucket, Key=key)
         img_bytes = resp["Body"].read()
