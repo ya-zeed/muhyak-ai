@@ -433,21 +433,15 @@ def bulk_update_quality_flags(
 
 # T020: Background job enqueue function
 def enqueue_quality_analysis(celebration_id: str, threshold: float, reanalyze: bool = False):
-    """Enqueue a quality analysis job to Redis Queue."""
-    from redis import Redis
-    from rq import Queue
+    """Enqueue a quality analysis job to configured backend (RQ or Modal)."""
+    from jobs.dispatcher import dispatch_job
 
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-    redis_conn = Redis.from_url(redis_url)
-    q = Queue(connection=redis_conn)
-
-    job = q.enqueue(
-        'services.quality_analyzer.analyze_celebration_job',
-        celebration_id,
-        threshold,
-        reanalyze,
-        job_timeout=600  # 10 minutes
+    job_id = dispatch_job(
+        "quality_analysis",
+        celebration_id=celebration_id,
+        threshold=threshold,
+        reanalyze=reanalyze,
     )
 
-    logger.info(f"Enqueued quality analysis job {job.id} for celebration {celebration_id}")
-    return job.id
+    logger.info(f"Enqueued quality analysis job {job_id} for celebration {celebration_id}")
+    return job_id

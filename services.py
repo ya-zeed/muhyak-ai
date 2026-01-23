@@ -52,7 +52,10 @@ class FaceRecognitionService:
 
     def _init_models(self):
         try:
-            self._app = insightface.app.FaceAnalysis(providers=[settings.INSIGHTFACE_PROVIDER])
+            self._app = insightface.app.FaceAnalysis(
+                name=settings.INSIGHTFACE_MODEL,
+                providers=[settings.INSIGHTFACE_PROVIDER]
+            )
             self._app.prepare(ctx_id=0, det_size=(settings.DET_SIZE_W, settings.DET_SIZE_H))
         except Exception as e:
             raise

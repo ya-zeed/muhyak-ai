@@ -1,0 +1,120 @@
+version: "3.8"
+
+# Production Docker Compose with optimized settings
+# Usage: docker-compose -f docker-compose.prod.yml up -d --scale rq-worker=4
+
+services:
+  api:
+    build: .
+    container_name: muhyak-ai
+    env_file: .env
+    environment:
+      # Fast mode settings
+      - INSIGHTFACE_MODEL=buffalo_s
+      - DET_SIZE_W=320
+      - DET_SIZE_H=320
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3322:8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Scale workers: docker-compose -f docker-compose.prod.yml up -d --scale rq-worker=N
+  # Each worker needs ~1-2GB RAM, so scale based on available memory
+  rq-worker:
+    build: .
+    command: python worker.py
+    env_file: .env
+    environment:
+      - INSIGHTFACE_MODEL=buffalo_s
+      - DET_SIZE_W=320
+      - DET_SIZE_H=320
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  rq-dashboard:
+    build: .
+    container_name: muhyak-rq-dashboard
+    command: rq-dashboard --redis-url redis://redis:6379 --port 9181
+    ports:
+      - "127.0.0.1:9181:9181"
+    depends_on:
+      - redis
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  redis:
+    image: redis:7-alpine
+    container_name: muhyak-redis
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  db:
+    image: postgres:15-alpine
+    container_name: photos-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+volumes:
+  pg_data:
+  redis_data:
