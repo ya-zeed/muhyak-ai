@@ -46,11 +46,16 @@ redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
 
 
 class FaceRecognitionService:
-    def __init__(self):
+    def __init__(self, lazy=True):
         self._app = None
-        self._init_models()
+        # With Modal backend, we don't need to load heavy models on API container
+        # Only initialize if explicitly requested (e.g., for search endpoint)
+        if not lazy and settings.WORKER_BACKEND != "modal":
+            self._init_models()
 
     def _init_models(self):
+        if self._app is not None:
+            return
         try:
             self._app = insightface.app.FaceAnalysis(
                 name=settings.INSIGHTFACE_MODEL,
@@ -61,6 +66,9 @@ class FaceRecognitionService:
             raise
 
     def detect_and_encode_faces(self, image_bgr) -> List[Dict[str, Any]]:
+        # Lazy load models on first use
+        if self._app is None:
+            self._init_models()
         faces = self._app.get(image_bgr)
         out: List[Dict[str, Any]] = []
         for i, f in enumerate(faces):
@@ -92,4 +100,6 @@ class FaceRecognitionService:
         return float(sharp * 0.4 + size * 0.3 + conf * 0.3)
 
 
-face_service = FaceRecognitionService()
+# Lazy initialization - models loaded only when needed (e.g., search endpoint)
+# With Modal backend, upload processing doesn't need this on API container
+face_service = FaceRecognitionService(lazy=True)

@@ -18,9 +18,10 @@ from utils import (
     compress_image_bytes,
     calculate_file_hash,
 )
-from services import face_service, upload_to_s3, redis_client
 from config import settings
 from jobs.dispatcher import dispatch_job
+# Services used by legacy RQ workers (not used with Modal upload endpoint)
+from services import face_service, upload_to_s3, redis_client
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

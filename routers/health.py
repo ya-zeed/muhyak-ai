@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from datetime import datetime
-from services import face_service
+from config import settings
 
 router = APIRouter()
 
@@ -9,5 +9,5 @@ def health():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "models_loaded": face_service is not None,
+        "worker_backend": settings.WORKER_BACKEND,
     }
