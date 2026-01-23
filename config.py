@@ -20,8 +20,11 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     VECTOR_DIM: int = 512
     INSIGHTFACE_PROVIDER: str = "CPUExecutionProvider"
-    DET_SIZE_W: int = 640
-    DET_SIZE_H: int = 640
+    # Model options: buffalo_l (accurate, slow), buffalo_s (fast, good enough for most cases)
+    INSIGHTFACE_MODEL: str = "buffalo_s"  # Changed from buffalo_l for 2-3x faster processing
+    # Detection size: 640 (accurate), 320 (2x faster), 160 (4x faster, may miss small faces)
+    DET_SIZE_W: int = 320  # Reduced from 640 for faster detection
+    DET_SIZE_H: int = 320  # Reduced from 640 for faster detection
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

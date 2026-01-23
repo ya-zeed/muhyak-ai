@@ -15,13 +15,20 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- Pre-download InsightFace models into the image ----
-# (uses default cache: /root/.insightface/models)
+# Download both models so you can switch via INSIGHTFACE_MODEL env var
+# buffalo_s: Fast model (~2-3x faster, good for most use cases)
+# buffalo_l: Accurate model (slower, better for high-quality results)
 RUN mkdir -p /root/.insightface/models && \
     python - <<'PY'
 from insightface.app import FaceAnalysis
-a = FaceAnalysis(name="buffalo_l")
-a.prepare(ctx_id=-1, det_size=(640,640))
-print("✅ InsightFace model cached.")
+# Download buffalo_s (fast model - default)
+a = FaceAnalysis(name="buffalo_s")
+a.prepare(ctx_id=-1, det_size=(320,320))
+print("✅ InsightFace buffalo_s model cached.")
+# Download buffalo_l (accurate model - optional)
+b = FaceAnalysis(name="buffalo_l")
+b.prepare(ctx_id=-1, det_size=(640,640))
+print("✅ InsightFace buffalo_l model cached.")
 PY
 
 # Copy code last (better cache)

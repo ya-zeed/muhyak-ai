@@ -10,15 +10,26 @@ services:
       - redis
     ports:
       - "127.0.0.1:3322:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
+  # Scale workers horizontally: docker-compose up --scale rq-worker=4
   rq-worker:
     build: .
-    container_name: muhyak-rq-worker
     command: python worker.py
     env_file: .env
     depends_on:
       - api
       - redis
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
 
   rq-dashboard:
     build: .
@@ -26,7 +37,10 @@ services:
     command: rq-dashboard --redis-url redis://redis:6379 --port 9181
     ports:
       - "9181:9181"
-
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   redis:
     image: redis:7
@@ -40,7 +54,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   db:
     image: postgres:15
@@ -51,6 +68,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
 volumes:
   pg_data:
