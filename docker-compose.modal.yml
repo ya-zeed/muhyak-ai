@@ -40,7 +40,7 @@ services:
     image: redis:7-alpine
     container_name: muhyak-redis
     ports:
-      - "0.0.0.0:6379:6379"  # WARNING: Exposed to internet! Use strong password!
+      - "0.0.0.0:6380:6379"  # WARNING: Exposed to internet! Use strong password!
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-strongpassword123}
@@ -63,7 +63,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "0.0.0.0:5432:5432"  # WARNING: Exposed to internet! Use strong password!
+      - "0.0.0.0:5433:5432"  # WARNING: Exposed to internet! Use strong password!
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
