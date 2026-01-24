@@ -5,15 +5,21 @@ class FaceSearchRequest(BaseModel):
     threshold: float = 0.6
     max_results: int = 50
 
+class FaceInfo(BaseModel):
+    face_id: str
+    face_index: int
+    bbox: List[float]
+
 class FaceSearchResponse(BaseModel):
     image_id: str
-    face_id: str
+    face_id: str  # The matched face
     filename: str
     similarity_score: float
     face_index: int
     bbox: List[float]
     image_url: Optional[str]
     compressed_url: Optional[str]
+    all_faces: List[FaceInfo] = []  # All faces in this image
 
 class ImageUploadResponse(BaseModel):
     image_id: str

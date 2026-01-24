@@ -7,7 +7,7 @@ from db import get_db
 
 logger = logging.getLogger(__name__)
 from models import FaceVector, WeddingImage, Celebration
-from schemas import FaceSearchRequest, FaceSearchResponse
+from schemas import FaceSearchRequest, FaceSearchResponse, FaceInfo
 from utils import load_image_from_bytes, cosine_similarity_search
 from services import face_service
 from sqlalchemy import and_
@@ -68,9 +68,29 @@ async def search_by_face_id(
     logger.info(f"🎯 Found {len(sims)} matches above threshold {request.threshold}")
 
     results: list[FaceSearchResponse] = []
+    seen_images = set()  # Track seen images to avoid duplicates
+
     for idx, score in sims[:request.max_results]:
         fv = vectors[idx]
+
+        # Skip if we already have this image
+        if fv.image_id in seen_images:
+            continue
+        seen_images.add(fv.image_id)
+
         img = db.get(WeddingImage, fv.image_id)
+
+        # Get all faces for this image
+        all_faces_in_image = db.query(FaceVector).filter(FaceVector.image_id == fv.image_id).all()
+        all_faces = [
+            FaceInfo(
+                face_id=str(f.id),
+                face_index=f.face_index,
+                bbox=f.bbox
+            )
+            for f in all_faces_in_image
+        ]
+
         results.append(FaceSearchResponse(
             image_id=str(fv.image_id),
             face_id=str(fv.id),
@@ -80,6 +100,7 @@ async def search_by_face_id(
             bbox=fv.bbox,
             image_url=img.file_path,
             compressed_url=img.compressed_file_path,
+            all_faces=all_faces,
         ))
     return results
 
@@ -147,9 +168,29 @@ async def search_faces(
     logger.info(f"🎯 Found {len(sims)} matches above threshold {request.threshold}")
 
     results: list[FaceSearchResponse] = []
+    seen_images = set()  # Track seen images to avoid duplicates
+
     for idx, score in sims[:request.max_results]:
         fv = vectors[idx]
+
+        # Skip if we already have this image
+        if fv.image_id in seen_images:
+            continue
+        seen_images.add(fv.image_id)
+
         img = db.get(WeddingImage, fv.image_id)
+
+        # Get all faces for this image
+        all_faces_in_image = db.query(FaceVector).filter(FaceVector.image_id == fv.image_id).all()
+        all_faces = [
+            FaceInfo(
+                face_id=str(f.id),
+                face_index=f.face_index,
+                bbox=f.bbox
+            )
+            for f in all_faces_in_image
+        ]
+
         results.append(FaceSearchResponse(
             image_id=str(fv.image_id),
             face_id=str(fv.id),
@@ -159,5 +200,6 @@ async def search_faces(
             bbox=fv.bbox,
             image_url=img.file_path,
             compressed_url=img.compressed_file_path,
+            all_faces=all_faces,
         ))
     return results
