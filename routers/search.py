@@ -16,6 +16,74 @@ from sqlalchemy import and_
 router = APIRouter(prefix="/{photographer}/{celebrant}/search", tags=["search"])
 
 
+@router.post("/by-face/{face_id}", response_model=list[FaceSearchResponse])
+async def search_by_face_id(
+        photographer: str = Path(...),
+        celebrant: str = Path(...),
+        face_id: str = Path(..., description="UUID of the source face to search for"),
+        request: FaceSearchRequest = Depends(),
+        db: Session = Depends(get_db),
+):
+    """Search for similar faces using an existing face_id."""
+    import uuid as uuid_module
+    logger.info(f"🔍 Search by face_id: photographer={photographer}, celebrant={celebrant}, face_id={face_id}")
+
+    # Validate and parse face_id
+    try:
+        face_uuid = uuid_module.UUID(face_id)
+    except ValueError:
+        raise HTTPException(400, "Invalid face_id format")
+
+    # Get source face
+    source_face = db.query(FaceVector).filter(FaceVector.id == face_uuid).first()
+    if not source_face:
+        logger.warning(f"Face not found: {face_id}")
+        raise HTTPException(404, "Face not found")
+
+    # Get celebration
+    celebration = db.query(Celebration).filter(
+        Celebration.celebrant == celebrant,
+        Celebration.photographer == photographer
+    ).first()
+    if not celebration:
+        logger.warning(f"Celebration not found: {photographer}/{celebrant}")
+        raise HTTPException(404, "Celebration not found")
+
+    # Get all face vectors for this celebration (excluding source face)
+    vectors = (
+        db.query(FaceVector)
+        .join(WeddingImage)
+        .filter(WeddingImage.processed == "completed")
+        .filter(WeddingImage.celebration_id == celebration.id)
+        .filter(FaceVector.id != face_uuid)  # Exclude source face
+        .all()
+    )
+
+    logger.info(f"📊 Found {len(vectors)} face vectors to compare against")
+
+    if not vectors:
+        return []
+
+    cand = [fv.vector for fv in vectors]
+    sims = cosine_similarity_search(source_face.vector, cand, threshold=request.threshold)
+    logger.info(f"🎯 Found {len(sims)} matches above threshold {request.threshold}")
+
+    results: list[FaceSearchResponse] = []
+    for idx, score in sims[:request.max_results]:
+        fv = vectors[idx]
+        img = db.get(WeddingImage, fv.image_id)
+        results.append(FaceSearchResponse(
+            image_id=str(fv.image_id),
+            filename=img.filename,
+            similarity_score=score,
+            face_index=fv.face_index,
+            bbox=fv.bbox,
+            image_url=img.file_path,
+            compressed_url=img.compressed_file_path,
+        ))
+    return results
+
+
 @router.post("", response_model=list[FaceSearchResponse])
 async def search_faces(
         photographer: str = Path(...),
