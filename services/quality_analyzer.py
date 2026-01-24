@@ -159,7 +159,7 @@ def detect_closed_eyes(image: np.ndarray, faces: list, ear_threshold: float = 0.
 
 
 # T010: Underexposure detection using histogram analysis
-def detect_underexposed(image: np.ndarray, brightness_threshold: float = 50.0, dark_ratio_threshold: float = 0.5) -> tuple[bool, float]:
+def detect_underexposed(image: np.ndarray, brightness_threshold: float = 30.0, dark_ratio_threshold: float = 0.7) -> tuple[bool, float]:
     """
     Detect underexposed (too dark) images using histogram analysis.
 
@@ -193,7 +193,7 @@ def detect_underexposed(image: np.ndarray, brightness_threshold: float = 50.0, d
 
 
 # T011: Overexposure detection using histogram analysis
-def detect_overexposed(image: np.ndarray, brightness_threshold: float = 205.0, clipped_threshold: float = 0.1) -> tuple[bool, float]:
+def detect_overexposed(image: np.ndarray, brightness_threshold: float = 220.0, clipped_threshold: float = 0.25) -> tuple[bool, float]:
     """
     Detect overexposed (too bright/washed out) images.
 
