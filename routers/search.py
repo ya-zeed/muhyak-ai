@@ -49,13 +49,12 @@ async def search_by_face_id(
         logger.warning(f"Celebration not found: {photographer}/{celebrant}")
         raise HTTPException(404, "Celebration not found")
 
-    # Get all face vectors for this celebration (excluding source face)
+    # Get all face vectors for this celebration (including source face's image)
     vectors = (
         db.query(FaceVector)
         .join(WeddingImage)
         .filter(WeddingImage.processed == "completed")
         .filter(WeddingImage.celebration_id == celebration.id)
-        .filter(FaceVector.id != face_uuid)  # Exclude source face
         .all()
     )
 
