@@ -7,6 +7,7 @@ class FaceSearchRequest(BaseModel):
 
 class FaceSearchResponse(BaseModel):
     image_id: str
+    face_id: str
     filename: str
     similarity_score: float
     face_index: int

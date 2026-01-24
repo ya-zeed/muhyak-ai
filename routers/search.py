@@ -73,6 +73,7 @@ async def search_by_face_id(
         img = db.get(WeddingImage, fv.image_id)
         results.append(FaceSearchResponse(
             image_id=str(fv.image_id),
+            face_id=str(fv.id),
             filename=img.filename,
             similarity_score=score,
             face_index=fv.face_index,
@@ -151,6 +152,7 @@ async def search_faces(
         img = db.get(WeddingImage, fv.image_id)
         results.append(FaceSearchResponse(
             image_id=str(fv.image_id),
+            face_id=str(fv.id),
             filename=img.filename,
             similarity_score=score,
             face_index=fv.face_index,
