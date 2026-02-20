@@ -62,14 +62,18 @@ def reprocess_celebration(
         WeddingImage.celebration_id == celebration.id
     ).all()
 
-    count = 0
+    # Set all images to pending and commit BEFORE dispatching jobs
+    # to avoid a race condition where Modal completes and sets "completed"
+    # but this commit overwrites it back to "pending"
     for img in images:
         img.processed = "pending"
+    db.commit()
+
+    count = 0
+    for img in images:
         job_id = dispatch_job("reprocess_image", image_id=str(img.id))
         count += 1
         logger.info(f"Queued job {job_id} for {img.filename}")
-
-    db.commit()
 
     return {
         "queued": count,
