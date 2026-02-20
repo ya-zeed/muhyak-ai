@@ -132,7 +132,7 @@ def _handle_single_upload(
 
         logger.info(f"🧾 Added {filename}, starting face detection...")
 
-        _process_image_faces(db, img, content)
+        _process_image_faces(db, img, comp_bytes)
 
     except Exception as e:
         logger.exception(f"❌ Failed to handle {filename}: {e}")

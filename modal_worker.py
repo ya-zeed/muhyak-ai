@@ -243,8 +243,8 @@ def process_image(
         face_app = FaceAnalysis(name="buffalo_s")
         face_app.prepare(ctx_id=0, det_size=(320, 320))
 
-        # Decode image for face detection
-        nparr = np.frombuffer(image_bytes, np.uint8)
+        # Decode compressed image for face detection (coordinates must match displayed size)
+        nparr = np.frombuffer(comp_bytes, np.uint8)
         image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if image_bgr is None:
