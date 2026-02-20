@@ -26,6 +26,8 @@ logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
+MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
+
 
 @router.post("", response_model=dict)
 async def upload_wedding_photos(
@@ -53,6 +55,11 @@ async def upload_wedding_photos(
 
     # Read file contents before responding
     file_contents = [await f.read() for f in files]
+
+    # Reject oversized files
+    oversized = [fn for fn, c in zip(filenames, file_contents) if len(c) > MAX_FILE_SIZE]
+    if oversized:
+        raise HTTPException(413, f"الملفات التالية تتجاوز 2MB: {', '.join(oversized)}")
 
     # Queue each file for async processing using configured backend
     for content, filename in zip(file_contents, filenames):
