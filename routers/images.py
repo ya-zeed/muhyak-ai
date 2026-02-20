@@ -47,8 +47,10 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
             "upload_date": img.upload_date.isoformat(),
             "faces_count": img.faces_count,
             "processed": img.processed,
-            "high_quality_url": img.file_path,
+            "file_path": img.file_path,
+            "compressed_file_path": img.compressed_file_path,
             "compressed_url": img.compressed_file_path,
+            "thumbnail_url": img.compressed_file_path,
             "order_number": img.order_number,
             "faces": [
                 {

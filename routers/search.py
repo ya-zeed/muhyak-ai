@@ -95,11 +95,13 @@ async def search_by_face_id(
             image_id=str(fv.image_id),
             face_id=str(fv.id),
             filename=img.filename,
-            similarity_score=score,
+            similarity=score,
             face_index=fv.face_index,
             bbox=fv.bbox,
-            image_url=img.file_path,
+            file_path=img.file_path,
+            compressed_file_path=img.compressed_file_path,
             compressed_url=img.compressed_file_path,
+            thumbnail_url=img.compressed_file_path,
             all_faces=all_faces,
         ))
     return results
@@ -195,11 +197,13 @@ async def search_faces(
             image_id=str(fv.image_id),
             face_id=str(fv.id),
             filename=img.filename,
-            similarity_score=score,
+            similarity=score,
             face_index=fv.face_index,
             bbox=fv.bbox,
-            image_url=img.file_path,
+            file_path=img.file_path,
+            compressed_file_path=img.compressed_file_path,
             compressed_url=img.compressed_file_path,
+            thumbnail_url=img.compressed_file_path,
             all_faces=all_faces,
         ))
     return results

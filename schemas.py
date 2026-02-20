@@ -14,11 +14,13 @@ class FaceSearchResponse(BaseModel):
     image_id: str
     face_id: str  # The matched face
     filename: str
-    similarity_score: float
+    similarity: float
     face_index: int
     bbox: List[float]
-    image_url: Optional[str]
+    file_path: Optional[str]
+    compressed_file_path: Optional[str]
     compressed_url: Optional[str]
+    thumbnail_url: Optional[str]
     all_faces: List[FaceInfo] = []  # All faces in this image
 
 class ImageUploadResponse(BaseModel):
