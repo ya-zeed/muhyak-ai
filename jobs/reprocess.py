@@ -33,8 +33,8 @@ def reprocess_image_job(image_id: str):
         deleted = db.query(FaceVector).filter(FaceVector.image_id == img.id).delete()
         logger.info(f"🗑️ Deleted {deleted} old face vectors")
 
-        # Use compressed URL if available, otherwise original
-        file_url = img.compressed_file_path or img.file_path
+        # Always use the original image so bbox coordinates match what the frontend displays
+        file_url = img.file_path
         content = load_file_bytes(file_url)
 
         _process_image_faces(db, img, content)

@@ -697,8 +697,8 @@ def reprocess_image(image_id: str) -> dict:
         if not img:
             return {"status": "failed", "reason": "image_not_found"}
 
-        # Download from S3
-        file_path = img.compressed_file_path or img.file_path
+        # Always use the original image so bbox coordinates match what the frontend displays
+        file_path = img.file_path
         key = extract_s3_key(file_path)
 
         resp = s3.get_object(Bucket=bucket, Key=key)
