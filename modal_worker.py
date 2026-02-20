@@ -124,8 +124,6 @@ def process_image(
     import logging
     import cv2
     import numpy as np
-    from PIL import Image
-    from io import BytesIO
     from insightface.app import FaceAnalysis
 
     logging.basicConfig(level=logging.INFO)
@@ -186,7 +184,7 @@ def process_image(
             logger.info(f"Skipped duplicate file {filename}")
             return {"status": "skipped", "reason": "duplicate", "file_hash": file_hash}
 
-        # Upload original to S3
+        # Upload to S3 (single copy — files are already optimized at upload time)
         orig_key = f"{photographer}/{celebrant}/{uuid.uuid4()}_{filename}"
         s3.put_object(
             Bucket=bucket,
@@ -199,36 +197,15 @@ def process_image(
         if s3_endpoint:
             from urllib.parse import urlparse
             host = urlparse(s3_endpoint).netloc
-            orig_url = f"https://{bucket}.{host}/{orig_key}"
+            url = f"https://{bucket}.{host}/{orig_key}"
         else:
-            orig_url = f"https://{bucket}.s3.amazonaws.com/{orig_key}"
+            url = f"https://{bucket}.s3.amazonaws.com/{orig_key}"
 
-        # Compress image
-        pil_img = Image.open(BytesIO(image_bytes))
-        pil_img.thumbnail((1024, 1024), Image.LANCZOS)
-        comp_buffer = BytesIO()
-        pil_img.save(comp_buffer, format="JPEG", quality=75)
-        comp_bytes = comp_buffer.getvalue()
-
-        # Upload compressed
-        comp_key = f"{photographer}/{celebrant}/compressed_{uuid.uuid4()}.jpg"
-        s3.put_object(
-            Bucket=bucket,
-            Key=comp_key,
-            Body=comp_bytes,
-            ContentType="image/jpeg",
-            ACL="public-read",
-        )
-        if s3_endpoint:
-            comp_url = f"https://{bucket}.{host}/{comp_key}"
-        else:
-            comp_url = f"https://{bucket}.s3.amazonaws.com/{comp_key}"
-
-        # Create DB record
+        # Create DB record — both paths point to the same file
         img = WeddingImage(
             filename=filename,
-            file_path=orig_url,
-            compressed_file_path=comp_url,
+            file_path=url,
+            compressed_file_path=url,
             file_hash=file_hash,
             processed="processing",
             celebration_id=uuid.UUID(celebration_id),
@@ -243,8 +220,8 @@ def process_image(
         face_app = FaceAnalysis(name="buffalo_s")
         face_app.prepare(ctx_id=0, det_size=(320, 320))
 
-        # Decode compressed image for face detection (coordinates must match displayed size)
-        nparr = np.frombuffer(comp_bytes, np.uint8)
+        # Decode original image for face detection
+        nparr = np.frombuffer(image_bytes, np.uint8)
         image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if image_bgr is None:

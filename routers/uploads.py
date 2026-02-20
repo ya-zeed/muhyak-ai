@@ -1,5 +1,4 @@
 import os
-import uuid
 import json
 import logging
 from fastapi import (
@@ -15,7 +14,6 @@ from db import get_db, SessionLocal
 from models import WeddingImage, FaceVector, Celebration
 from utils import (
     load_image_from_bytes,
-    compress_image_bytes,
     calculate_file_hash,
 )
 from config import settings
@@ -27,6 +25,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 router = APIRouter(prefix="/upload", tags=["upload"])
+
+MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
 
 
 @router.post("", response_model=dict)
@@ -55,6 +55,11 @@ async def upload_wedding_photos(
 
     # Read file contents before responding
     file_contents = [await f.read() for f in files]
+
+    # Reject oversized files
+    oversized = [fn for fn, c in zip(filenames, file_contents) if len(c) > MAX_FILE_SIZE]
+    if oversized:
+        raise HTTPException(413, f"الملفات التالية تتجاوز 2MB: {', '.join(oversized)}")
 
     # Queue each file for async processing using configured backend
     for content, filename in zip(file_contents, filenames):
@@ -106,22 +111,14 @@ def _handle_single_upload(
             logger.info(f"🟡 Skipped duplicate file {filename}")
             return
 
-        # Upload to S3 (original + compressed)
-        orig_url = upload_to_s3(content, filename, "image/jpeg", celebrant, photographer)
-        comp_bytes = compress_image_bytes(content)
-        comp_url = upload_to_s3(
-            comp_bytes,
-            f"compressed_{uuid.uuid4()}.jpg",
-            "image/jpeg",
-            celebrant,
-            photographer,
-        )
+        # Upload to S3 (single copy — files are already optimized at upload time)
+        url = upload_to_s3(content, filename, "image/jpeg", celebrant, photographer)
 
-        # DB entry
+        # DB entry — both paths point to the same file
         img = WeddingImage(
             filename=filename,
-            file_path=orig_url,
-            compressed_file_path=comp_url,
+            file_path=url,
+            compressed_file_path=url,
             file_hash=file_hash,
             processed="pending",
             celebration_id=celebration_id,
@@ -132,7 +129,7 @@ def _handle_single_upload(
 
         logger.info(f"🧾 Added {filename}, starting face detection...")
 
-        _process_image_faces(db, img, comp_bytes)
+        _process_image_faces(db, img, content)
 
     except Exception as e:
         logger.exception(f"❌ Failed to handle {filename}: {e}")
