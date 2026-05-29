@@ -20,11 +20,11 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     VECTOR_DIM: int = 512
     INSIGHTFACE_PROVIDER: str = "CPUExecutionProvider"
-    # Model options: buffalo_l (accurate, slow), buffalo_s (fast, good enough for most cases)
-    INSIGHTFACE_MODEL: str = "buffalo_s"  # Changed from buffalo_l for 2-3x faster processing
-    # Detection size: 640 (accurate), 320 (2x faster), 160 (4x faster, may miss small faces)
-    DET_SIZE_W: int = 320  # Reduced from 640 for faster detection
-    DET_SIZE_H: int = 320  # Reduced from 640 for faster detection
+    INSIGHTFACE_MODEL: str = "buffalo_l"
+    DET_SIZE_W: int = 640
+    DET_SIZE_H: int = 640
+    MIN_FACE_PIXELS: int = 48
+    EMBEDDING_MODEL_VERSION: str = "buffalo_l_v1"
 
     # Worker backend: "rq" (Redis Queue, self-hosted) or "modal" (serverless, pay-per-use)
     WORKER_BACKEND: str = "rq"

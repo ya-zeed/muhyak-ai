@@ -6,6 +6,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import String, DateTime, Float, Integer, Text, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, ARRAY
 
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:  # pragma: no cover - keeps imports working if pgvector is uninstalled
+    Vector = None
+
 
 class Base(DeclarativeBase): pass
 
@@ -57,11 +62,13 @@ class FaceVector(Base):
     celebration_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("celebrations.id"),
                                                       nullable=False)
     face_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    vector: Mapped[list[float]] = mapped_column(ARRAY(Float), nullable=False)  # step 1: keep ARRAY; pgvector later
+    vector: Mapped[list[float]] = mapped_column(ARRAY(Float), nullable=False)  # legacy column; pgvector column added in migration 003
+    vector_pg: Mapped[list[float] | None] = mapped_column(Vector(512) if Vector is not None else ARRAY(Float), nullable=True)
     bbox: Mapped[list[float] | None] = mapped_column(ARRAY(Float))
     landmarks: Mapped[list[float] | None] = mapped_column(ARRAY(Float))
     confidence: Mapped[float | None] = mapped_column(Float)
     quality_score: Mapped[float | None] = mapped_column(Float)
+    embedding_model: Mapped[str | None] = mapped_column(String(40), default=None, index=True)
     created_date: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     celebration: Mapped["Celebration"] = relationship(back_populates="faces")
     image: Mapped["WeddingImage"] = relationship(back_populates="faces")

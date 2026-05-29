@@ -155,11 +155,13 @@ def _process_image_faces(db: Session, img: WeddingImage, file_content: bytes):
                     image_id=img.id,
                     face_index=f["face_index"],
                     vector=f["vector"],
+                    vector_pg=f["vector"],
                     bbox=f["bbox"],
                     landmarks=f["landmarks"],
                     confidence=f["confidence"],
                     quality_score=f["quality_score"],
                     celebration_id=img.celebration_id,
+                    embedding_model=settings.EMBEDDING_MODEL_VERSION,
                 )
             )
 

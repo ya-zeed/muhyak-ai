@@ -16,9 +16,11 @@ redis>=5.0,<6.0
 numpy>=1.26,<3.0
 opencv-python-headless>=4.9,<4.11
 Pillow>=10.3,<11.0
+pillow-heif>=0.16,<1.0
 scikit-learn>=1.4,<1.6
 insightface>=0.7,<0.9
 onnxruntime>=1.17,<2.0   # use onnxruntime-gpu if you have CUDA
+pgvector>=0.3,<0.5
 
 pydantic>=2.6,<3.0
 pydantic-settings>=2.2,<3.0

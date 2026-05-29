@@ -2,14 +2,21 @@ import io, hashlib
 from typing import Tuple
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageOps
 from sklearn.metrics.pairwise import cosine_similarity
+
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 
 def calculate_file_hash(file_content: bytes) -> str:
     return hashlib.sha256(file_content).hexdigest()
 
 def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:
     img = Image.open(io.BytesIO(image_bytes))
+    img = ImageOps.exif_transpose(img)
     if img.mode != "RGB":
         img = img.convert("RGB")
     arr = np.array(img)
@@ -17,6 +24,7 @@ def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:
 
 def compress_image_bytes(image_bytes: bytes, quality: int = 75, max_size: Tuple[int,int] = (1024,1024)) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
+    img = ImageOps.exif_transpose(img)
     if img.mode != "RGB":
         img = img.convert("RGB")
     img.thumbnail(max_size, resample=Image.LANCZOS)

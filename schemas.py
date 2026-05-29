@@ -30,8 +30,3 @@ class ImageUploadResponse(BaseModel):
     status: str
     compressed_url: Optional[str]
 
-class FaceClusterResponse(BaseModel):
-    cluster_id: int
-    face_count: int
-    representative_face: Dict[str, Any]
-    faces: List[Dict[str, Any]]

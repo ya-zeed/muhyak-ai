@@ -71,19 +71,26 @@ class FaceRecognitionService:
             self._init_models()
         faces = self._app.get(image_bgr)
         out: List[Dict[str, Any]] = []
-        for i, f in enumerate(faces):
+        out_idx = 0
+        for f in faces:
             emb = f.embedding
             if emb is None or emb.shape[0] != settings.VECTOR_DIM:
-                # if model mismatch, skip to keep vectors consistent
+                continue
+            x1, y1, x2, y2 = f.bbox.astype(int)
+            face_w = max(x2 - x1, 0)
+            face_h = max(y2 - y1, 0)
+            if min(face_w, face_h) < settings.MIN_FACE_PIXELS:
+                # Reject sub-threshold detections (background blur, mis-detections)
                 continue
             out.append({
-                "face_index": i,
+                "face_index": out_idx,
                 "vector": emb.tolist(),
                 "bbox": f.bbox.tolist(),
                 "landmarks": f.kps.flatten().tolist(),
                 "confidence": float(f.det_score),
                 "quality_score": self._quality_score(f, image_bgr),
             })
+            out_idx += 1
         return out
 
     def _quality_score(self, face, image_bgr) -> float:

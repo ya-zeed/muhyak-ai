@@ -16,6 +16,14 @@ Usage:
 """
 import modal
 
+# Face-model config — must match local muhyak-ai/config.py.
+# After changing INSIGHTFACE_MODEL or DET_SIZE you must redeploy
+# (modal deploy modal_worker.py) so the new model is pre-cached in the image.
+INSIGHTFACE_MODEL = "buffalo_l"
+DET_SIZE = 640
+MIN_FACE_PIXELS = 48
+EMBEDDING_MODEL_VERSION = "buffalo_l_v1"
+
 # Container image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -26,18 +34,20 @@ image = (
         "opencv-python-headless>=4.9,<4.11",
         "numpy>=1.26,<3.0",
         "pillow>=10.3,<11.0",
+        "pillow-heif>=0.16,<1.0",
         "boto3>=1.34,<2.0",
         "redis>=5.0,<6.0",
         "psycopg[binary]>=3.1,<3.2",
         "sqlalchemy>=2.0,<2.1",
+        "pgvector>=0.3,<0.5",
     )
     .run_commands(
-        # Pre-download the fast model
-        "python -c \""
-        "from insightface.app import FaceAnalysis; "
-        "a = FaceAnalysis(name='buffalo_s'); "
-        "a.prepare(ctx_id=-1, det_size=(320,320)); "
-        "print('Model cached')\""
+        # Pre-download the face model into the image layer so cold starts don't pay for it.
+        f"python -c \""
+        f"from insightface.app import FaceAnalysis; "
+        f"a = FaceAnalysis(name='{INSIGHTFACE_MODEL}'); "
+        f"a.prepare(ctx_id=-1, det_size=({DET_SIZE},{DET_SIZE})); "
+        f"print('Model {INSIGHTFACE_MODEL} cached')\""
     )
 )
 
@@ -99,6 +109,36 @@ def extract_s3_key(file_path: str) -> str:
     return key
 
 
+def _decode_image_with_exif(image_bytes: bytes):
+    """Decode bytes -> BGR ndarray, honoring EXIF rotation and HEIC.
+
+    Returns None when the bytes can't be decoded so callers can mark the image failed.
+    """
+    import io
+    import logging
+    import numpy as np
+    import cv2
+    from PIL import Image, ImageOps
+
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    except Exception:
+        pass
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        arr = np.array(img)
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"PIL decode failed ({e}); falling back to cv2")
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+
 @app.function(
     memory=2048,
     cpu=2.0,
@@ -157,6 +197,8 @@ def process_image(
         quality_analyzed = Column(Boolean, default=False)
         order_number = Column(Integer)
 
+    from pgvector.sqlalchemy import Vector
+
     class FaceVector(Base):
         __tablename__ = "face_vectors"
         id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
@@ -164,10 +206,12 @@ def process_image(
         celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
         face_index = Column(Integer, nullable=False)
         vector = Column(ARRAY(Float), nullable=False)
+        vector_pg = Column(Vector(512))
         bbox = Column(ARRAY(Float))
         landmarks = Column(ARRAY(Float))
         confidence = Column(Float)
         quality_score = Column(Float)
+        embedding_model = Column(String(40))
         created_date = Column(DateTime, default=datetime.utcnow)
 
     try:
@@ -216,29 +260,32 @@ def process_image(
 
         logger.info(f"Added {filename}, starting face detection...")
 
-        # Initialize face model
-        face_app = FaceAnalysis(name="buffalo_s")
-        face_app.prepare(ctx_id=0, det_size=(320, 320))
-
-        # Decode original image for face detection
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        image_bgr = _decode_image_with_exif(image_bytes)
 
         if image_bgr is None:
             img.processed = "failed"
             db.commit()
             return {"status": "failed", "reason": "decode_error"}
 
+        # Initialize face model
+        face_app = FaceAnalysis(name=INSIGHTFACE_MODEL)
+        face_app.prepare(ctx_id=0, det_size=(DET_SIZE, DET_SIZE))
+
         # Detect faces
         faces = face_app.get(image_bgr)
         face_data = []
+        out_index = 0
 
-        for i, f in enumerate(faces):
+        for f in faces:
             if f.embedding is None or len(f.embedding) != 512:
                 continue
 
-            # Calculate quality score
             x1, y1, x2, y2 = f.bbox.astype(int)
+            face_w = max(x2 - x1, 0)
+            face_h = max(y2 - y1, 0)
+            if min(face_w, face_h) < MIN_FACE_PIXELS:
+                continue
+
             crop = image_bgr[max(y1, 0):max(y2, 0), max(x1, 0):max(x2, 0)]
             quality = 0.0
             if crop.size > 0:
@@ -250,26 +297,30 @@ def process_image(
                 conf = float(min(f.det_score, 1.0))
                 quality = float(sharp * 0.4 + size * 0.3 + conf * 0.3)
 
+            embedding = f.embedding.tolist()
             face_record = FaceVector(
                 image_id=img.id,
                 celebration_id=img.celebration_id,
-                face_index=i,
-                vector=f.embedding.tolist(),
+                face_index=out_index,
+                vector=embedding,
+                vector_pg=embedding,
                 bbox=f.bbox.tolist(),
                 landmarks=f.kps.flatten().tolist(),
                 confidence=float(f.det_score),
                 quality_score=quality,
+                embedding_model=EMBEDDING_MODEL_VERSION,
             )
             db.add(face_record)
 
             face_data.append({
-                "face_index": i,
+                "face_index": out_index,
                 "vector": f.embedding.tolist(),
                 "bbox": f.bbox.tolist(),
                 "landmarks": f.kps.flatten().tolist(),
                 "confidence": float(f.det_score),
                 "quality_score": quality,
             })
+            out_index += 1
 
         img.faces_count = len(face_data)
         img.processed = "completed"
@@ -531,9 +582,68 @@ def analyze_quality(
     # Initialize S3 client and imports
     import cv2
     import numpy as np
+    import random
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     s3 = get_s3_client()
     bucket = os.environ.get("AWS_S3_BUCKET")
+    S3_WORKERS = 8
+
+    def _decode(image_bytes: bytes):
+        try:
+            import io
+            from PIL import Image, ImageOps
+            try:
+                from pillow_heif import register_heif_opener
+                register_heif_opener()
+            except Exception:
+                pass
+            img = Image.open(io.BytesIO(image_bytes))
+            img = ImageOps.exif_transpose(img)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        except Exception:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    def _calibrate(sample_images):
+        """Sample-driven percentile thresholds; falls back to defaults on tiny events."""
+        if len(sample_images) < 5:
+            return None
+        laps, brights = [], []
+
+        def _stat(wi):
+            try:
+                fp = wi.compressed_file_path or wi.file_path
+                k = extract_s3_key(fp)
+                data = s3.get_object(Bucket=bucket, Key=k)["Body"].read()
+                im = _decode(data)
+                if im is None:
+                    return None
+                g = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+                return float(cv2.Laplacian(g, cv2.CV_64F).var()), float(g.mean())
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=S3_WORKERS) as pool:
+            for res in pool.map(_stat, sample_images):
+                if res:
+                    laps.append(res[0])
+                    brights.append(res[1])
+        if len(laps) < 5:
+            return None
+        laps.sort()
+        brights.sort()
+        n = len(laps)
+        def pct(arr, q):
+            return arr[max(0, min(n - 1, int(q * (n - 1))))]
+        return {
+            "blur": max(50.0, min(180.0, pct(laps, 0.25))),
+            "brightness_low": max(15.0, min(60.0, pct(brights, 0.10))),
+            "brightness_high": max(180.0, min(240.0, pct(brights, 0.90))),
+            "n": n,
+        }
 
     try:
         celeb_uuid = uuid.UUID(celebration_id)
@@ -561,63 +671,80 @@ def analyze_quality(
             db.commit()
             return {"status": "completed", "processed": 0, "flagged": 0}
 
+        # Calibrate per-celebration thresholds
+        sample_n = min(25, len(images))
+        sample = random.sample(images, sample_n) if len(images) > sample_n else list(images)
+        cal = _calibrate(sample)
+        if cal:
+            logger.info(f"Calibrated (n={cal['n']}): blur={cal['blur']:.1f} under<{cal['brightness_low']:.1f} over>{cal['brightness_high']:.1f}")
+        blur_t = (cal or {}).get("blur", 100.0)
+        under_t = (cal or {}).get("brightness_low", 30.0)
+        over_t = (cal or {}).get("brightness_high", 220.0)
+
         processed = 0
         flagged = 0
 
-        for img in images:
+        def _fetch(img_row):
             try:
-                file_path = img.compressed_file_path or img.file_path
-                key = extract_s3_key(file_path)
-
-                resp = s3.get_object(Bucket=bucket, Key=key)
-                img_bytes = resp["Body"].read()
-
-                nparr = np.frombuffer(img_bytes, np.uint8)
-                image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                if image_bgr is None:
-                    processed += 1
-                    continue
-
-                issues = []
-
-                is_blurry, blur_conf = detect_blur(image_bgr)
-                if is_blurry and blur_conf >= threshold:
-                    issues.append(("blur", blur_conf))
-
-                has_motion, motion_conf = detect_motion_blur(image_bgr)
-                if has_motion and motion_conf >= threshold:
-                    issues.append(("motion_blur", motion_conf))
-
-                is_under, under_conf = detect_underexposed(image_bgr)
-                if is_under and under_conf >= threshold:
-                    issues.append(("underexposed", under_conf))
-
-                is_over, over_conf = detect_overexposed(image_bgr)
-                if is_over and over_conf >= threshold:
-                    issues.append(("overexposed", over_conf))
-
-                if issues:
-                    flagged += 1
-                    for issue_type, conf in issues:
-                        flag = ImageQualityFlag(
-                            image_id=img.id,
-                            issue_type=issue_type,
-                            confidence=conf,
-                        )
-                        db.add(flag)
-
-                img.quality_analyzed = True
-                processed += 1
-
-                if processed % 10 == 0:
-                    job.processed_count = processed
-                    job.flagged_count = flagged
-                    db.commit()
-
+                fp = img_row.compressed_file_path or img_row.file_path
+                k = extract_s3_key(fp)
+                return img_row, s3.get_object(Bucket=bucket, Key=k)["Body"].read(), None
             except Exception as e:
-                logger.error(f"Error analyzing {img.id}: {e}")
-                continue
+                return img_row, None, str(e)
+
+        with ThreadPoolExecutor(max_workers=S3_WORKERS) as pool:
+            futures = [pool.submit(_fetch, im) for im in images]
+
+            for future in as_completed(futures):
+                img, img_bytes, err = future.result()
+                try:
+                    if err:
+                        logger.warning(f"Fetch failed for {img.id}: {err}")
+                        processed += 1
+                        continue
+
+                    image_bgr = _decode(img_bytes) if img_bytes else None
+                    if image_bgr is None:
+                        processed += 1
+                        continue
+
+                    issues = []
+
+                    is_blurry, blur_conf = detect_blur(image_bgr, thresh=blur_t)
+                    if is_blurry and blur_conf >= threshold:
+                        issues.append(("blur", blur_conf))
+
+                    has_motion, motion_conf = detect_motion_blur(image_bgr)
+                    if has_motion and motion_conf >= threshold:
+                        issues.append(("motion_blur", motion_conf))
+
+                    is_under, under_conf = detect_underexposed(image_bgr, bright_thresh=under_t)
+                    if is_under and under_conf >= threshold:
+                        issues.append(("underexposed", under_conf))
+
+                    is_over, over_conf = detect_overexposed(image_bgr, bright_thresh=over_t)
+                    if is_over and over_conf >= threshold:
+                        issues.append(("overexposed", over_conf))
+
+                    if issues:
+                        flagged += 1
+                        for issue_type, conf in issues:
+                            db.add(ImageQualityFlag(
+                                image_id=img.id,
+                                issue_type=issue_type,
+                                confidence=conf,
+                            ))
+
+                    img.quality_analyzed = True
+                    processed += 1
+
+                    if processed % 10 == 0:
+                        job.processed_count = processed
+                        job.flagged_count = flagged
+                        db.commit()
+                except Exception as e:
+                    logger.error(f"Error analyzing {img.id}: {e}")
+                    continue
 
         job.processed_count = processed
         job.flagged_count = flagged
@@ -677,6 +804,8 @@ def reprocess_image(image_id: str) -> dict:
         faces_count = Column(Integer, default=0)
         processed = Column(String, default="pending")
 
+    from pgvector.sqlalchemy import Vector
+
     class FaceVector(Base):
         __tablename__ = "face_vectors"
         id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
@@ -684,10 +813,12 @@ def reprocess_image(image_id: str) -> dict:
         celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
         face_index = Column(Integer, nullable=False)
         vector = Column(ARRAY(Float), nullable=False)
+        vector_pg = Column(Vector(512))
         bbox = Column(ARRAY(Float))
         landmarks = Column(ARRAY(Float))
         confidence = Column(Float)
         quality_score = Column(Float)
+        embedding_model = Column(String(40))
         created_date = Column(DateTime, default=datetime.utcnow)
 
     try:
@@ -704,8 +835,7 @@ def reprocess_image(image_id: str) -> dict:
         resp = s3.get_object(Bucket=bucket, Key=key)
         img_bytes = resp["Body"].read()
 
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        image_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        image_bgr = _decode_image_with_exif(img_bytes)
 
         if image_bgr is None:
             img.processed = "failed"
@@ -716,16 +846,22 @@ def reprocess_image(image_id: str) -> dict:
         db.query(FaceVector).filter(FaceVector.image_id == img.id).delete()
 
         # Detect faces
-        face_app = FaceAnalysis(name="buffalo_s")
-        face_app.prepare(ctx_id=0, det_size=(320, 320))
+        face_app = FaceAnalysis(name=INSIGHTFACE_MODEL)
+        face_app.prepare(ctx_id=0, det_size=(DET_SIZE, DET_SIZE))
         faces = face_app.get(image_bgr)
 
         face_data = []
-        for i, f in enumerate(faces):
+        out_index = 0
+        for f in faces:
             if f.embedding is None or len(f.embedding) != 512:
                 continue
 
             x1, y1, x2, y2 = f.bbox.astype(int)
+            face_w = max(x2 - x1, 0)
+            face_h = max(y2 - y1, 0)
+            if min(face_w, face_h) < MIN_FACE_PIXELS:
+                continue
+
             crop = image_bgr[max(y1, 0):max(y2, 0), max(x1, 0):max(x2, 0)]
             quality = 0.0
             if crop.size > 0:
@@ -737,23 +873,27 @@ def reprocess_image(image_id: str) -> dict:
                 conf = float(min(f.det_score, 1.0))
                 quality = float(sharp * 0.4 + size * 0.3 + conf * 0.3)
 
+            embedding = f.embedding.tolist()
             face_record = FaceVector(
                 image_id=img.id,
                 celebration_id=img.celebration_id,
-                face_index=i,
-                vector=f.embedding.tolist(),
+                face_index=out_index,
+                vector=embedding,
+                vector_pg=embedding,
                 bbox=f.bbox.tolist(),
                 landmarks=f.kps.flatten().tolist(),
                 confidence=float(f.det_score),
                 quality_score=quality,
+                embedding_model=EMBEDDING_MODEL_VERSION,
             )
             db.add(face_record)
             face_data.append({
-                "face_index": i,
+                "face_index": out_index,
                 "bbox": f.bbox.tolist(),
                 "confidence": float(f.det_score),
                 "quality_score": quality,
             })
+            out_index += 1
 
         img.faces_count = len(face_data)
         img.processed = "completed"

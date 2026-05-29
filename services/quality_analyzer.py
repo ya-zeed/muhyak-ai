@@ -84,78 +84,98 @@ def detect_motion_blur(image: np.ndarray, threshold: float = 0.7) -> tuple[bool,
     return has_motion_blur, confidence
 
 
-# T009: Closed eyes detection using face landmarks
+# T009: Closed eyes detection
+#
+# InsightFace's `buffalo_l` returns only 5 landmark points (left_eye, right_eye,
+# nose, left_mouth, right_mouth) — single centers, not an eye contour. So a
+# classic Eye Aspect Ratio formula isn't computable directly.
+#
+# Instead, we crop an eye-sized patch around each eye center (scaled by the
+# inter-ocular distance) and score it on two skin-tone-robust signals:
+#
+#   1. Laplacian variance — texture/edge content of the patch. Open eyes have
+#      sharp iris/pupil/eyelash edges; closed eyes show only smooth eyelid skin.
+#   2. Vertical intensity range — open eyes show a wide light/dark range
+#      (sclera + pupil); closed eyes are uniformly toned.
+#
+# These beat the previous "mean intensity < 80" heuristic which silently
+# false-positives on darker skin tones and false-negatives on bright backlight.
+
+# Patch size as a fraction of inter-ocular distance. Calibrated against typical
+# face geometry (eye width ≈ 0.45 IOD, eye height ≈ 0.30 IOD).
+_EYE_PATCH_HALF_W = 0.225
+_EYE_PATCH_HALF_H = 0.15
+
+# Score thresholds. Both edge-density and intensity-range have to look "flat"
+# for an eye to be called closed. Conservative on purpose — flagging an awake
+# guest as "closed eyes" is much worse than missing a blink in one frame.
+_EDGE_BASELINE = 200.0  # Laplacian variance considered "definitely open"
+_RANGE_BASELINE = 80.0  # intensity range considered "definitely open"
+_CLOSED_SCORE_THRESHOLD = 0.55
+
+
 def detect_closed_eyes(image: np.ndarray, faces: list, ear_threshold: float = 0.2) -> tuple[bool, float]:
-    """
-    Detect closed eyes using Eye Aspect Ratio (EAR) from facial landmarks.
+    """Detect closed eyes from per-face landmarks.
 
-    Args:
-        image: BGR image array from OpenCV
-        faces: List of face detection results with landmarks
-        ear_threshold: EAR threshold below which eyes are considered closed
-
-    Returns:
-        tuple of (has_closed_eyes, confidence_score)
+    ``ear_threshold`` is retained for API compatibility but unused; the
+    classifier now scores patch texture + intensity range instead of EAR.
+    Returns the maximum closed-score across faces in the image.
     """
     if not faces:
         return False, 0.0
 
-    max_closed_confidence = 0.0
-    has_any_closed = False
+    h, w = image.shape[:2]
+    max_closed_score = 0.0
+
+    def _patch_closed_score(crop: np.ndarray) -> float:
+        if crop.size == 0:
+            return 0.0
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        edge_score = 1.0 - min(cv2.Laplacian(gray, cv2.CV_64F).var() / _EDGE_BASELINE, 1.0)
+        intensity_range = float(gray.max()) - float(gray.min())
+        range_score = 1.0 - min(intensity_range / _RANGE_BASELINE, 1.0)
+        # Both signals have to agree — geometric mean punishes
+        # cases where only one fires.
+        return float((edge_score * range_score) ** 0.5)
 
     for face in faces:
         landmarks = face.get('landmarks') or face.get('kps')
         if landmarks is None:
             continue
 
-        landmarks = np.array(landmarks)
-        if len(landmarks) < 5:
+        landmarks = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
+        if len(landmarks) < 2:
             continue
 
-        # InsightFace 5-point landmarks: left_eye, right_eye, nose, left_mouth, right_mouth
-        # For closed eye detection, we need to analyze eye region
-        # Since we only have center points, we'll use a heuristic based on eye region intensity
-
-        left_eye = landmarks[0] if len(landmarks) > 0 else None
-        right_eye = landmarks[1] if len(landmarks) > 1 else None
-
-        if left_eye is None or right_eye is None:
+        left_eye = landmarks[0]
+        right_eye = landmarks[1]
+        inter_ocular = float(np.linalg.norm(left_eye - right_eye))
+        if inter_ocular < 8:
+            # Face too small to read eye state reliably; skip rather than guess.
             continue
 
-        # Sample eye regions for darkness (closed eyes tend to be darker/narrower)
-        # This is a simplified heuristic without full facial landmark mesh
-        eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
-        sample_radius = int(eye_distance * 0.15)
+        half_w = max(int(inter_ocular * _EYE_PATCH_HALF_W), 4)
+        half_h = max(int(inter_ocular * _EYE_PATCH_HALF_H), 3)
 
-        if sample_radius < 3:
-            sample_radius = 3
+        eye_scores: list[float] = []
+        for eye_xy in (left_eye, right_eye):
+            x, y = int(eye_xy[0]), int(eye_xy[1])
+            x0 = max(x - half_w, 0)
+            x1 = min(x + half_w, w)
+            y0 = max(y - half_h, 0)
+            y1 = min(y + half_h, h)
+            crop = image[y0:y1, x0:x1]
+            eye_scores.append(_patch_closed_score(crop))
 
-        h, w = image.shape[:2]
+        if not eye_scores:
+            continue
 
-        def get_eye_intensity(eye_point):
-            x, y = int(eye_point[0]), int(eye_point[1])
-            x = max(sample_radius, min(w - sample_radius, x))
-            y = max(sample_radius, min(h - sample_radius, y))
-            region = image[y-sample_radius:y+sample_radius, x-sample_radius:x+sample_radius]
-            if region.size == 0:
-                return 128
-            gray_region = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if len(region.shape) == 3 else region
-            return gray_region.mean()
+        # Average of both eyes — winks aren't "closed eyes" for photo-cull purposes.
+        face_score = sum(eye_scores) / len(eye_scores)
+        if face_score > _CLOSED_SCORE_THRESHOLD:
+            max_closed_score = max(max_closed_score, face_score)
 
-        left_intensity = get_eye_intensity(left_eye)
-        right_intensity = get_eye_intensity(right_eye)
-        avg_intensity = (left_intensity + right_intensity) / 2
-
-        # Closed eyes tend to have lower intensity (eyelid skin vs eyeball)
-        # This is a heuristic - production would use a dedicated eye state classifier
-        is_likely_closed = avg_intensity < 80  # Dark eye regions
-
-        if is_likely_closed:
-            has_any_closed = True
-            confidence = 1.0 - (avg_intensity / 80)
-            max_closed_confidence = max(max_closed_confidence, confidence)
-
-    return has_any_closed, max_closed_confidence
+    return (max_closed_score > _CLOSED_SCORE_THRESHOLD, max_closed_score)
 
 
 # T010: Underexposure detection using histogram analysis
@@ -229,7 +249,8 @@ def detect_overexposed(image: np.ndarray, brightness_threshold: float = 220.0, c
 def analyze_single_image(
     image: np.ndarray,
     faces: list | None = None,
-    threshold: float = 0.70
+    threshold: float = 0.70,
+    calibrated: dict | None = None,
 ) -> list[dict]:
     """
     Analyze a single image for all quality issues.
@@ -238,14 +259,20 @@ def analyze_single_image(
         image: BGR image array from OpenCV
         faces: Optional list of detected faces with landmarks
         threshold: Minimum confidence threshold for flagging issues
+        calibrated: Optional per-celebration thresholds from ``_calibrate_thresholds``.
+            Falls back to global defaults when missing.
 
     Returns:
         List of detected issues with type and confidence
     """
     issues = []
+    cal = calibrated or {}
+    blur_t = cal.get("blur", 100.0)
+    under_t = cal.get("brightness_low", 30.0)
+    over_t = cal.get("brightness_high", 220.0)
 
     # Run all detectors
-    is_blurry, blur_conf = detect_blur(image)
+    is_blurry, blur_conf = detect_blur(image, threshold=blur_t)
     if is_blurry and blur_conf >= threshold:
         issues.append({"issue_type": "blur", "confidence": blur_conf})
 
@@ -258,15 +285,100 @@ def analyze_single_image(
         if has_closed_eyes and eyes_conf >= threshold:
             issues.append({"issue_type": "closed_eyes", "confidence": eyes_conf})
 
-    is_underexposed, under_conf = detect_underexposed(image)
+    is_underexposed, under_conf = detect_underexposed(image, brightness_threshold=under_t)
     if is_underexposed and under_conf >= threshold:
         issues.append({"issue_type": "underexposed", "confidence": under_conf})
 
-    is_overexposed, over_conf = detect_overexposed(image)
+    is_overexposed, over_conf = detect_overexposed(image, brightness_threshold=over_t)
     if is_overexposed and over_conf >= threshold:
         issues.append({"issue_type": "overexposed", "confidence": over_conf})
 
     return issues
+
+
+# Sample size for per-celebration calibration. 25 is enough to estimate
+# the 10th/25th/90th percentile of a celebration's brightness/sharpness
+# distribution without paying a meaningful extra S3 cost.
+_CALIBRATION_SAMPLE = 25
+_MIN_CALIBRATION_SAMPLES = 5
+
+
+def _calibrate_thresholds(images_to_sample, s3_client, bucket: str) -> dict | None:
+    """Compute per-celebration percentile-based thresholds.
+
+    Outdoor noon weddings have a totally different luminance profile from
+    candle-lit indoor receptions. Flagging issues against fixed
+    "underexposed if brightness < 30" thresholds therefore false-positives
+    (or false-negatives) all night. We sample a handful of frames, look at
+    the distribution, and define "unusually X" relative to *this* event.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from utils import load_image_from_bytes
+
+    if not images_to_sample:
+        return None
+
+    def _fetch_stats(wedding_image):
+        try:
+            file_path = wedding_image.compressed_file_path or wedding_image.file_path
+            key = _extract_s3_key(file_path, bucket)
+            data = s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
+            try:
+                img = load_image_from_bytes(data)
+            except Exception:
+                nparr = np.frombuffer(data, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                return None
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return {
+                "lap": float(cv2.Laplacian(gray, cv2.CV_64F).var()),
+                "brightness": float(gray.mean()),
+            }
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=_S3_FETCH_WORKERS) as pool:
+        results = list(pool.map(_fetch_stats, images_to_sample))
+
+    stats = [s for s in results if s is not None]
+    if len(stats) < _MIN_CALIBRATION_SAMPLES:
+        return None
+
+    laplacians = sorted(s["lap"] for s in stats)
+    brightnesses = sorted(s["brightness"] for s in stats)
+    n = len(stats)
+
+    def _pct(arr, q: float) -> float:
+        idx = max(0, min(n - 1, int(q * (n - 1))))
+        return arr[idx]
+
+    # Floors/ceilings keep one extreme image from poisoning the whole event
+    # (e.g. a single sunset shot mustn't make the system blind to actual blowouts).
+    return {
+        "blur": max(50.0, min(180.0, _pct(laplacians, 0.25))),
+        "brightness_low": max(15.0, min(60.0, _pct(brightnesses, 0.10))),
+        "brightness_high": max(180.0, min(240.0, _pct(brightnesses, 0.90))),
+        "sample_size": n,
+    }
+
+
+# How many S3 fetches can be in flight at once.
+# 8 saturates a typical Spaces/S3 connection without overwhelming
+# the Postgres session or burning Modal memory at ~2MB/image avg.
+_S3_FETCH_WORKERS = 8
+
+
+def _extract_s3_key(file_path: str, bucket: str) -> str:
+    """Strip protocol/host/query-string from an S3 URL and return the key."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(file_path)
+    key = parsed.path.lstrip("/")
+    key = key.split("?")[0]
+    if bucket and key.startswith(f"{bucket}/"):
+        key = key[len(bucket) + 1:]
+    return key
 
 
 # T013: Batch processing for celebration analysis
@@ -288,9 +400,12 @@ def analyze_celebration(
     Returns:
         QualityAnalysisJob tracking the analysis progress
     """
-    from config import settings
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import random
     import boto3
-    from io import BytesIO
+
+    from config import settings
+    from utils import load_image_from_bytes
 
     # Get celebration and images
     celebration = db.query(Celebration).filter(Celebration.id == celebration_id).first()
@@ -332,71 +447,92 @@ def analyze_celebration(
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
         region_name=settings.AWS_REGION
     )
+    bucket = settings.AWS_S3_BUCKET
+
+    # Per-celebration calibration. Skip when the event is too small to
+    # learn anything statistically meaningful — global defaults still work.
+    calibrated = None
+    if total_images >= _MIN_CALIBRATION_SAMPLES:
+        sample_size = min(_CALIBRATION_SAMPLE, total_images)
+        sample = random.sample(images, sample_size) if total_images > sample_size else list(images)
+        calibrated = _calibrate_thresholds(sample, s3_client, bucket)
+        if calibrated:
+            logger.info(
+                f"📊 Calibrated thresholds (n={calibrated.get('sample_size')}): "
+                f"blur={calibrated['blur']:.1f} "
+                f"underexposed<{calibrated['brightness_low']:.1f} "
+                f"overexposed>{calibrated['brightness_high']:.1f}"
+            )
+
+    def _fetch(wedding_image: WeddingImage) -> tuple[WeddingImage, bytes | None, str | None]:
+        try:
+            file_path = wedding_image.compressed_file_path or wedding_image.file_path
+            key = _extract_s3_key(file_path, bucket)
+            resp = s3_client.get_object(Bucket=bucket, Key=key)
+            return wedding_image, resp['Body'].read(), None
+        except Exception as e:
+            return wedding_image, None, str(e)
 
     flagged_count = 0
     processed_count = 0
 
-    for wedding_image in images:
-        try:
-            # Download image from S3
-            # Extract bucket and key from file_path URL
-            file_path = wedding_image.compressed_file_path or wedding_image.file_path
+    # Fan out S3 fetches; drain as they complete. The decode/analyze/DB-write
+    # stays on this thread — SQLAlchemy sessions aren't thread-safe and
+    # numpy/cv2 work releases the GIL anyway.
+    with ThreadPoolExecutor(max_workers=_S3_FETCH_WORKERS) as pool:
+        futures = [pool.submit(_fetch, wi) for wi in images]
 
-            # Parse S3 URL to get key
-            # URL format: https://bucket.endpoint/key or https://endpoint/bucket/key
-            if settings.AWS_S3_BUCKET in file_path:
-                key = file_path.split(settings.AWS_S3_BUCKET + '/')[-1].split('?')[0]
-            else:
-                key = '/'.join(file_path.split('/')[-2:]).split('?')[0]
+        for future in as_completed(futures):
+            wedding_image, image_bytes, fetch_err = future.result()
+            try:
+                if fetch_err:
+                    logger.warning(f"Fetch failed for {wedding_image.id}: {fetch_err}")
+                    processed_count += 1
+                    continue
 
-            response = s3_client.get_object(Bucket=settings.AWS_S3_BUCKET, Key=key)
-            image_bytes = response['Body'].read()
+                try:
+                    image = load_image_from_bytes(image_bytes)
+                except Exception:
+                    # Fallback to raw cv2 decode for the rare formats PIL doesn't grok.
+                    nparr = np.frombuffer(image_bytes, np.uint8)
+                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            # Convert to OpenCV format
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if image is None:
+                    logger.warning(f"Could not decode image {wedding_image.id}")
+                    processed_count += 1
+                    continue
 
-            if image is None:
-                logger.warning(f"Could not decode image {wedding_image.id}")
+                # Build face data for closed-eye detection.
+                faces = [
+                    {'landmarks': fv.landmarks, 'bbox': fv.bbox}
+                    for fv in wedding_image.faces
+                    if fv.landmarks
+                ]
+
+                issues = analyze_single_image(image, faces, threshold, calibrated=calibrated)
+
+                if issues:
+                    flagged_count += 1
+                    for issue in issues:
+                        db.add(ImageQualityFlag(
+                            image_id=wedding_image.id,
+                            issue_type=issue['issue_type'],
+                            confidence=issue['confidence'],
+                        ))
+
+                wedding_image.quality_analyzed = True
                 processed_count += 1
+
+                # Periodic progress commit so the dashboard's status polling
+                # sees movement even on large celebrations.
+                if processed_count % 10 == 0:
+                    job.processed_count = processed_count
+                    job.flagged_count = flagged_count
+                    db.commit()
+
+            except Exception as e:
+                logger.error(f"Error analyzing image {wedding_image.id}: {e}")
                 continue
-
-            # Get face data for closed eye detection
-            faces = []
-            for face_vector in wedding_image.faces:
-                if face_vector.landmarks:
-                    faces.append({
-                        'landmarks': face_vector.landmarks,
-                        'bbox': face_vector.bbox
-                    })
-
-            # Analyze image
-            issues = analyze_single_image(image, faces, threshold)
-
-            # Store flags
-            if issues:
-                flagged_count += 1
-                for issue in issues:
-                    flag = ImageQualityFlag(
-                        image_id=wedding_image.id,
-                        issue_type=issue['issue_type'],
-                        confidence=issue['confidence']
-                    )
-                    db.add(flag)
-
-            # Mark as analyzed
-            wedding_image.quality_analyzed = True
-            processed_count += 1
-
-            # Update job progress periodically
-            if processed_count % 10 == 0:
-                job.processed_count = processed_count
-                job.flagged_count = flagged_count
-                db.commit()
-
-        except Exception as e:
-            logger.error(f"Error analyzing image {wedding_image.id}: {e}")
-            continue
 
     # Complete the job
     job.processed_count = processed_count
