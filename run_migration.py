@@ -72,7 +72,7 @@ def run_migrations():
             for f in pending:
                 print(f"\n⚡ Applying {f.name}...")
                 sql = f.read_text()
-                conn.execute(text(sql))
+                conn.exec_driver_sql(sql)
                 conn.execute(
                     text("INSERT INTO schema_migrations (filename) VALUES (:n)"),
                     {"n": f.name},
