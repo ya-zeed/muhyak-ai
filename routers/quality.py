@@ -231,7 +231,11 @@ def list_flagged_images(
     issue_type: Optional[str] = Query(None, description="Filter by issue type"),
     reviewed: Optional[bool] = Query(None, description="Filter by reviewed status"),
     page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=1, le=100),
+    # Photographers occasionally have several hundred flagged images and the
+    # dashboard wants them all on one page so the photographer can sweep
+    # through. Cap is high enough to fit a typical wedding gallery's worst
+    # case but small enough that a single page can still render.
+    per_page: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db)
 ):
     """List images with quality flags for a celebration."""
