@@ -607,15 +607,14 @@ def analyze_quality(
             nparr = np.frombuffer(image_bytes, np.uint8)
             return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    def _calibrate(sample_images):
+    def _calibrate(sample_paths):
         """Sample-driven percentile thresholds; falls back to defaults on tiny events."""
-        if len(sample_images) < 5:
+        if len(sample_paths) < 5:
             return None
         laps, brights = [], []
 
-        def _stat(wi):
+        def _stat(fp):
             try:
-                fp = wi.compressed_file_path or wi.file_path
                 k = extract_s3_key(fp)
                 data = s3.get_object(Bucket=bucket, Key=k)["Body"].read()
                 im = _decode(data)
@@ -627,7 +626,7 @@ def analyze_quality(
                 return None
 
         with ThreadPoolExecutor(max_workers=S3_WORKERS) as pool:
-            for res in pool.map(_stat, sample_images):
+            for res in pool.map(_stat, sample_paths):
                 if res:
                     laps.append(res[0])
                     brights.append(res[1])
@@ -671,10 +670,33 @@ def analyze_quality(
             db.commit()
             return {"status": "completed", "processed": 0, "flagged": 0}
 
+        # Snapshot ORM fields into plain tuples so worker threads never touch
+        # the SQLAlchemy session (sessions are not thread-safe; lazy loads from
+        # background threads were causing inner-flush warnings and duplicate
+        # inserts).
+        image_records = [
+            (img.id, img.compressed_file_path or img.file_path) for img in images
+        ]
+        images_by_id = {img.id: img for img in images}
+
+        # Re-runs must be idempotent: clear any existing flags for the images
+        # we're about to re-analyze, otherwise reanalyze=True would race against
+        # itself if a previous run partially wrote flags.
+        if reanalyze:
+            image_ids = [r[0] for r in image_records]
+            db.query(ImageQualityFlag).filter(
+                ImageQualityFlag.image_id.in_(image_ids)
+            ).delete(synchronize_session=False)
+            db.commit()
+
         # Calibrate per-celebration thresholds
-        sample_n = min(25, len(images))
-        sample = random.sample(images, sample_n) if len(images) > sample_n else list(images)
-        cal = _calibrate(sample)
+        sample_n = min(25, len(image_records))
+        sample_paths = (
+            [r[1] for r in random.sample(image_records, sample_n)]
+            if len(image_records) > sample_n
+            else [r[1] for r in image_records]
+        )
+        cal = _calibrate(sample_paths)
         if cal:
             logger.info(f"Calibrated (n={cal['n']}): blur={cal['blur']:.1f} under<{cal['brightness_low']:.1f} over>{cal['brightness_high']:.1f}")
         blur_t = (cal or {}).get("blur", 100.0)
@@ -684,22 +706,22 @@ def analyze_quality(
         processed = 0
         flagged = 0
 
-        def _fetch(img_row):
+        def _fetch(record):
+            img_id, fp = record
             try:
-                fp = img_row.compressed_file_path or img_row.file_path
                 k = extract_s3_key(fp)
-                return img_row, s3.get_object(Bucket=bucket, Key=k)["Body"].read(), None
+                return img_id, s3.get_object(Bucket=bucket, Key=k)["Body"].read(), None
             except Exception as e:
-                return img_row, None, str(e)
+                return img_id, None, str(e)
 
         with ThreadPoolExecutor(max_workers=S3_WORKERS) as pool:
-            futures = [pool.submit(_fetch, im) for im in images]
+            futures = [pool.submit(_fetch, rec) for rec in image_records]
 
             for future in as_completed(futures):
-                img, img_bytes, err = future.result()
+                img_id, img_bytes, err = future.result()
                 try:
                     if err:
-                        logger.warning(f"Fetch failed for {img.id}: {err}")
+                        logger.warning(f"Fetch failed for {img_id}: {err}")
                         processed += 1
                         continue
 
@@ -730,12 +752,14 @@ def analyze_quality(
                         flagged += 1
                         for issue_type, conf in issues:
                             db.add(ImageQualityFlag(
-                                image_id=img.id,
+                                image_id=img_id,
                                 issue_type=issue_type,
                                 confidence=conf,
                             ))
 
-                    img.quality_analyzed = True
+                    img_row = images_by_id.get(img_id)
+                    if img_row is not None:
+                        img_row.quality_analyzed = True
                     processed += 1
 
                     if processed % 10 == 0:
@@ -743,7 +767,10 @@ def analyze_quality(
                         job.flagged_count = flagged
                         db.commit()
                 except Exception as e:
-                    logger.error(f"Error analyzing {img.id}: {e}")
+                    # Roll back so the session can keep being used. Without this,
+                    # the next attribute access triggers PendingRollbackError.
+                    db.rollback()
+                    logger.error(f"Error analyzing {img_id}: {e}")
                     continue
 
         job.processed_count = processed
