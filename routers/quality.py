@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -119,6 +119,35 @@ def _get_celebration(db: Session, photographer: str, celebrant: str) -> Celebrat
     return celebration
 
 
+def _recover_stale_jobs(db: Session, celebration_id: uuid.UUID) -> None:
+    """Mark abandoned pending/processing jobs as failed.
+
+    Workers can die without flipping the row (Modal timeout, OOM, crash before
+    the except clause runs). Without this, the dashboard polls "جاري التحليل"
+    forever and the trigger endpoint 409s on every retry. Called from both
+    the status read path and the trigger path so either unsticks things.
+    """
+    now = datetime.utcnow()
+    jobs = db.query(QualityAnalysisJob).filter(
+        QualityAnalysisJob.celebration_id == celebration_id,
+        QualityAnalysisJob.status.in_(["pending", "processing"]),
+    ).all()
+    changed = False
+    for j in jobs:
+        age = now - j.started_at
+        is_stale = (
+            (j.processed_count == 0 and age > timedelta(minutes=10))
+            or age > timedelta(minutes=30)
+        )
+        if is_stale:
+            j.status = "failed"
+            j.error_message = j.error_message or "Worker did not finish; auto-recovered"
+            j.completed_at = now
+            changed = True
+    if changed:
+        db.commit()
+
+
 # T015: POST /quality/{photographer}/{celebrant}/analyze
 @router.post("/{photographer}/{celebrant}/analyze", response_model=QualityAnalysisJobResponse, status_code=202)
 def trigger_quality_analysis(
@@ -133,7 +162,9 @@ def trigger_quality_analysis(
     """
     celebration = _get_celebration(db, photographer, celebrant)
 
-    # Check if analysis already in progress
+    _recover_stale_jobs(db, celebration.id)
+
+    # Check if analysis already in progress (after stale recovery)
     existing_job = db.query(QualityAnalysisJob).filter(
         QualityAnalysisJob.celebration_id == celebration.id,
         QualityAnalysisJob.status.in_(["pending", "processing"])
@@ -179,6 +210,8 @@ def get_quality_status(
 ):
     """Get the most recent quality analysis job status for a celebration."""
     celebration = _get_celebration(db, photographer, celebrant)
+
+    _recover_stale_jobs(db, celebration.id)
 
     job = db.query(QualityAnalysisJob).filter(
         QualityAnalysisJob.celebration_id == celebration.id

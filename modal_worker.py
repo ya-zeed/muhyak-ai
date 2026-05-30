@@ -653,14 +653,32 @@ def analyze_quality(
             query = query.filter(WeddingImage.quality_analyzed == False)
         images = query.all()
 
-        # Create/update job
-        job = QualityAnalysisJob(
-            celebration_id=celeb_uuid,
-            total_images=len(images),
-            status="processing",
-            threshold=threshold,
+        # Reuse the pending job the API created on trigger instead of inserting
+        # a new row. Otherwise we end up with stale orphan jobs that block
+        # future triggers and confuse the status endpoint.
+        job = (
+            db.query(QualityAnalysisJob)
+            .filter(
+                QualityAnalysisJob.celebration_id == celeb_uuid,
+                QualityAnalysisJob.status.in_(["pending", "processing"]),
+            )
+            .order_by(QualityAnalysisJob.started_at.desc())
+            .first()
         )
-        db.add(job)
+        if job is None:
+            job = QualityAnalysisJob(
+                celebration_id=celeb_uuid,
+                total_images=len(images),
+                status="processing",
+                threshold=threshold,
+            )
+            db.add(job)
+        else:
+            job.total_images = len(images)
+            job.status = "processing"
+            job.threshold = threshold
+            job.error_message = None
+            job.completed_at = None
         db.commit()
         db.refresh(job)
 
@@ -784,6 +802,27 @@ def analyze_quality(
 
     except Exception as e:
         logger.exception(f"Quality analysis failed: {e}")
+        # Mark the job as failed so the frontend stops spinning on
+        # "جاري التحليل" forever. The session may be in a bad state, so roll
+        # back first and re-query.
+        try:
+            db.rollback()
+            stuck_job = (
+                db.query(QualityAnalysisJob)
+                .filter(
+                    QualityAnalysisJob.celebration_id == uuid.UUID(celebration_id),
+                    QualityAnalysisJob.status.in_(["pending", "processing"]),
+                )
+                .order_by(QualityAnalysisJob.started_at.desc())
+                .first()
+            )
+            if stuck_job is not None:
+                stuck_job.status = "failed"
+                stuck_job.error_message = str(e)[:500]
+                stuck_job.completed_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            logger.exception("Failed to record analysis failure on job row")
         return {"status": "failed", "error": str(e)}
     finally:
         db.close()
