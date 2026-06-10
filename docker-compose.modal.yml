@@ -15,6 +15,12 @@ services:
     env_file: .env
     environment:
       - WORKER_BACKEND=modal
+      # Must match the model the Modal worker stores embeddings with (buffalo_l).
+      # buffalo_s here puts search-image queries in a different vector space
+      # → ~0 similarity → no results. Overrides any value in .env.
+      - INSIGHTFACE_MODEL=buffalo_l
+      - DET_SIZE_W=640
+      - DET_SIZE_H=640
     depends_on:
       db:
         condition: service_healthy
