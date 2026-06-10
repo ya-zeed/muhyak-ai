@@ -55,46 +55,54 @@ def _mmr_rerank(
 ) -> list[tuple[FaceVector, float]]:
     """Pose-diversity reranking, dedup'd per image.
 
-    `hits` is already sorted by descending similarity. For each pick we maximize
+    Greedy MMR: each pick maximizes
     ``lambda * sim(query, c) - (1-lambda) * max_sim(c, selected)`` so two
-    near-identical shots of the same person at the same instant don't both
-    survive. Faces below ``threshold`` are skipped entirely.
-    InsightFace embeddings are L2-normalized, so dot product == cosine.
+    near-identical shots of the same person don't both survive. Faces below
+    ``threshold`` are dropped. Vectorized with numpy so it stays fast for large
+    ``max_results`` — the previous per-pair Python loop was ~O(n^3) and timed
+    out once max_results was raised. InsightFace embeddings are L2-normalized,
+    so dot product == cosine.
     """
-    if not hits:
+    filtered = [(fv, sim) for fv, sim in hits if sim >= threshold]
+    if not filtered:
         return []
 
-    selected: list[tuple[FaceVector, float]] = []
-    selected_vecs: list[np.ndarray] = []
-    seen_images: set = set()
-    remaining = [(fv, sim) for fv, sim in hits if sim >= threshold]
+    n = len(filtered)
+    sims = np.asarray([sim for _, sim in filtered], dtype=np.float32)
+    vecs = np.stack([_embed_vector(fv) for fv, _ in filtered]).astype(np.float32)
 
-    while remaining and len(selected) < max_results:
-        if not selected_vecs:
-            best_idx = 0
+    # Map image UUIDs to ints so per-image dedup is a vectorized mask op.
+    image_index = np.empty(n, dtype=np.int64)
+    seen: dict = {}
+    for i, (fv, _) in enumerate(filtered):
+        iid = fv.image_id
+        if iid not in seen:
+            seen[iid] = len(seen)
+        image_index[i] = seen[iid]
+
+    available = np.ones(n, dtype=bool)
+    # penalty[i] = max cosine similarity of candidate i to any selected face.
+    penalty = np.full(n, -np.inf, dtype=np.float32)
+    selected_idx: list[int] = []
+
+    while len(selected_idx) < max_results and available.any():
+        if not selected_idx:
+            scores = np.where(available, sims, -np.inf)
         else:
-            best_idx = -1
-            best_score = -float("inf")
-            for i, (fv, sim) in enumerate(remaining):
-                if fv.image_id in seen_images:
-                    continue
-                vec = _embed_vector(fv)
-                penalty = max(float(np.dot(vec, s)) for s in selected_vecs)
-                mmr = lambda_param * sim - (1.0 - lambda_param) * penalty
-                if mmr > best_score:
-                    best_score = mmr
-                    best_idx = i
-            if best_idx == -1:
-                break
+            mmr = lambda_param * sims - (1.0 - lambda_param) * penalty
+            scores = np.where(available, mmr, -np.inf)
 
-        fv, sim = remaining.pop(best_idx)
-        if fv.image_id in seen_images:
-            continue
-        selected.append((fv, sim))
-        selected_vecs.append(_embed_vector(fv))
-        seen_images.add(fv.image_id)
+        best = int(np.argmax(scores))
+        if not available[best]:
+            break
 
-    return selected
+        selected_idx.append(best)
+        # Drop every face that shares the picked image.
+        available &= image_index != image_index[best]
+        # Update each candidate's running max similarity to the selected set.
+        penalty = np.maximum(penalty, vecs @ vecs[best])
+
+    return [filtered[i] for i in selected_idx]
 
 
 def _resolve_celebration(db: Session, photographer: str, celebrant: str) -> Celebration:
