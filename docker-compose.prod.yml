@@ -9,10 +9,12 @@ services:
     container_name: muhyak-ai
     env_file: .env
     environment:
-      # Fast mode settings
-      - INSIGHTFACE_MODEL=buffalo_s
-      - DET_SIZE_W=320
-      - DET_SIZE_H=320
+      # Must match the model the stored embeddings were created with (Modal
+      # worker uses buffalo_l). Using buffalo_s here makes search-image queries
+      # land in a different embedding space → ~0 similarity → no results.
+      - INSIGHTFACE_MODEL=buffalo_l
+      - DET_SIZE_W=640
+      - DET_SIZE_H=640
     depends_on:
       db:
         condition: service_healthy
@@ -25,7 +27,7 @@ services:
       resources:
         limits:
           cpus: '2'
-          memory: 1G
+          memory: 2G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -40,9 +42,9 @@ services:
     command: python worker.py
     env_file: .env
     environment:
-      - INSIGHTFACE_MODEL=buffalo_s
-      - DET_SIZE_W=320
-      - DET_SIZE_H=320
+      - INSIGHTFACE_MODEL=buffalo_l
+      - DET_SIZE_W=640
+      - DET_SIZE_H=640
     depends_on:
       api:
         condition: service_healthy
