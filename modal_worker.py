@@ -347,6 +347,230 @@ def process_image(
 
 
 @app.function(
+    memory=3072,
+    cpu=2.0,
+    timeout=600,
+    secrets=secrets,
+    retries=2,
+)
+def import_drive_image(
+    file_id: str,
+    api_key: str,
+    filename: str,
+    mime_type: str,
+    celebrant: str,
+    photographer: str,
+    celebration_id: str,
+) -> dict:
+    """
+    Import one image straight from Google Drive — no round-trip through the app
+    server. Stores the full-resolution original as file_path and a downscaled
+    JPEG as compressed_file_path; faces run on the compressed image so bbox
+    coordinates match what the gallery displays.
+    """
+    import os
+    import io
+    import uuid
+    import json
+    import hashlib
+    import logging
+    import urllib.parse
+    import urllib.request
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageOps
+    from insightface.app import FaceAnalysis
+
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    db = get_db_session()
+    s3 = get_s3_client()
+    redis_client = get_redis_client()
+    bucket = os.environ.get("AWS_S3_BUCKET")
+
+    from sqlalchemy import Column, String, Integer, Float, DateTime, Boolean, ARRAY
+    from sqlalchemy.dialects.postgresql import UUID as PGUUID
+    from sqlalchemy.orm import declarative_base
+    import uuid as uuid_lib
+    from datetime import datetime
+
+    Base = declarative_base()
+
+    class WeddingImage(Base):
+        __tablename__ = "wedding_images"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
+        filename = Column(String, nullable=False)
+        file_path = Column(String, nullable=False)
+        compressed_file_path = Column(String)
+        file_hash = Column(String, unique=True)
+        upload_date = Column(DateTime, default=datetime.utcnow)
+        faces_count = Column(Integer, default=0)
+        processed = Column(String, default="pending")
+        quality_analyzed = Column(Boolean, default=False)
+        order_number = Column(Integer)
+
+    from pgvector.sqlalchemy import Vector
+
+    class FaceVector(Base):
+        __tablename__ = "face_vectors"
+        id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid_lib.uuid4)
+        image_id = Column(PGUUID(as_uuid=True), nullable=False)
+        celebration_id = Column(PGUUID(as_uuid=True), nullable=False)
+        face_index = Column(Integer, nullable=False)
+        vector = Column(ARRAY(Float), nullable=False)
+        vector_pg = Column(Vector(512))
+        bbox = Column(ARRAY(Float))
+        landmarks = Column(ARRAY(Float))
+        confidence = Column(Float)
+        quality_score = Column(Float)
+        embedding_model = Column(String(40))
+        created_date = Column(DateTime, default=datetime.utcnow)
+
+    def _progress(failed: bool = False):
+        try:
+            redis_client.incr(f"gdrive_import:{celebration_id}:done")
+            redis_client.expire(f"gdrive_import:{celebration_id}:done", 86400)
+            if failed:
+                redis_client.incr(f"gdrive_import:{celebration_id}:failed")
+                redis_client.expire(f"gdrive_import:{celebration_id}:failed", 86400)
+        except Exception:
+            pass
+
+    def _s3_url(key: str) -> str:
+        s3_endpoint = os.environ.get("S3_ENDPOINT", "")
+        if s3_endpoint:
+            from urllib.parse import urlparse
+            host = urlparse(s3_endpoint).netloc
+            return f"https://{bucket}.{host}/{key}"
+        return f"https://{bucket}.s3.amazonaws.com/{key}"
+
+    try:
+        # ── Download original from Drive ───────────────────
+        params = urllib.parse.urlencode({"alt": "media", "key": api_key})
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?{params}"
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            raw = resp.read()
+
+        if not raw:
+            _progress(failed=True)
+            return {"status": "failed", "reason": "empty_download"}
+
+        file_hash = hashlib.sha256(raw).hexdigest()
+        existing = db.query(WeddingImage).filter(WeddingImage.file_hash == file_hash).first()
+        if existing:
+            logger.info(f"Skipped duplicate {filename}")
+            _progress()
+            return {"status": "skipped", "reason": "duplicate"}
+
+        # ── Compress (bakes EXIF orientation) ──────────────
+        pil = Image.open(io.BytesIO(raw))
+        pil = ImageOps.exif_transpose(pil)
+        if pil.mode != "RGB":
+            pil = pil.convert("RGB")
+        pil.thumbnail((2048, 2048), Image.LANCZOS)
+        cbuf = io.BytesIO()
+        pil.save(cbuf, format="JPEG", quality=72, optimize=True)
+        compressed = cbuf.getvalue()
+
+        out_name = filename.rsplit(".", 1)[0] + ".jpg"
+
+        # ── Upload both copies to S3 ───────────────────────
+        orig_key = f"{photographer}/{celebrant}/{uuid.uuid4()}_{filename}"
+        s3.put_object(
+            Bucket=bucket, Key=orig_key, Body=raw,
+            ContentType=mime_type or "image/jpeg", ACL="public-read",
+        )
+        comp_key = f"{photographer}/{celebrant}/{uuid.uuid4()}_{out_name}"
+        s3.put_object(
+            Bucket=bucket, Key=comp_key, Body=compressed,
+            ContentType="image/jpeg", ACL="public-read",
+        )
+
+        img = WeddingImage(
+            filename=out_name,
+            file_path=_s3_url(orig_key),
+            compressed_file_path=_s3_url(comp_key),
+            file_hash=file_hash,
+            processed="processing",
+            celebration_id=uuid.UUID(celebration_id),
+        )
+        db.add(img)
+        db.commit()
+        db.refresh(img)
+
+        # ── Detect faces on the compressed image ───────────
+        image_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+        face_app = FaceAnalysis(name=INSIGHTFACE_MODEL)
+        face_app.prepare(ctx_id=0, det_size=(DET_SIZE, DET_SIZE))
+        faces = face_app.get(image_bgr)
+
+        face_data = []
+        out_index = 0
+        for f in faces:
+            if f.embedding is None or len(f.embedding) != 512:
+                continue
+
+            x1, y1, x2, y2 = f.bbox.astype(int)
+            face_w = max(x2 - x1, 0)
+            face_h = max(y2 - y1, 0)
+            if min(face_w, face_h) < MIN_FACE_PIXELS:
+                continue
+
+            crop = image_bgr[max(y1, 0):max(y2, 0), max(x1, 0):max(x2, 0)]
+            quality = 0.0
+            if crop.size > 0:
+                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+                sharp = min(sharpness / 1000, 1.0)
+                area = max((y2 - y1) * (x2 - x1), 1)
+                size = min(area / 10000, 1.0)
+                conf = float(min(f.det_score, 1.0))
+                quality = float(sharp * 0.4 + size * 0.3 + conf * 0.3)
+
+            embedding = f.embedding.tolist()
+            db.add(FaceVector(
+                image_id=img.id,
+                celebration_id=img.celebration_id,
+                face_index=out_index,
+                vector=embedding,
+                vector_pg=embedding,
+                bbox=f.bbox.tolist(),
+                landmarks=f.kps.flatten().tolist(),
+                confidence=float(f.det_score),
+                quality_score=quality,
+                embedding_model=EMBEDDING_MODEL_VERSION,
+            ))
+            face_data.append({
+                "face_index": out_index,
+                "bbox": f.bbox.tolist(),
+                "confidence": float(f.det_score),
+                "quality_score": quality,
+            })
+            out_index += 1
+
+        img.faces_count = len(face_data)
+        img.processed = "completed"
+        db.commit()
+
+        redis_client.setex(f"image_faces:{img.id}", 3600, json.dumps(face_data, default=str))
+        logger.info(f"Imported {out_name} ({len(face_data)} faces)")
+        _progress()
+
+        return {"status": "completed", "image_id": str(img.id), "faces_count": len(face_data)}
+
+    except Exception as e:
+        logger.exception(f"Drive import failed for {filename}: {e}")
+        db.rollback()
+        _progress(failed=True)
+        return {"status": "failed", "reason": str(e)}
+    finally:
+        db.close()
+
+
+@app.function(
     memory=1024,
     cpu=1.0,
     timeout=120,

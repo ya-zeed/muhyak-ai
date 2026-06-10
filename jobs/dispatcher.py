@@ -40,6 +40,7 @@ def _dispatch_rq(job_type: str, **kwargs) -> str:
         "process_image": "routers.uploads._handle_single_upload",
         "quality_analysis": "services.quality_analyzer.analyze_celebration_job",
         "reprocess_image": "jobs.reprocess.reprocess_image_job",
+        "import_drive_image": "jobs.gdrive_import.import_drive_image_job",
     }
 
     func_path = job_mapping.get(job_type)
@@ -68,6 +69,18 @@ def _dispatch_rq(job_type: str, **kwargs) -> str:
         job = queue.enqueue(
             func_path,
             kwargs.get("image_id"),
+        )
+    elif job_type == "import_drive_image":
+        job = queue.enqueue(
+            func_path,
+            kwargs.get("file_id"),
+            kwargs.get("api_key"),
+            kwargs.get("filename"),
+            kwargs.get("mime_type"),
+            kwargs.get("celebrant"),
+            kwargs.get("photographer"),
+            kwargs.get("celebration_id"),
+            job_timeout=600,
         )
     else:
         raise ValueError(f"Unknown job type: {job_type}")
@@ -116,6 +129,21 @@ def _dispatch_modal(job_type: str, **kwargs) -> str:
         call = reprocess_fn.spawn(image_id=kwargs.get("image_id"))
         job_id = call.object_id
         logger.info(f"[Modal] Dispatched reprocess_image job: {job_id}")
+        return job_id
+
+    elif job_type == "import_drive_image":
+        import_fn = modal.Function.from_name(app_name, "import_drive_image")
+        call = import_fn.spawn(
+            file_id=kwargs.get("file_id"),
+            api_key=kwargs.get("api_key"),
+            filename=kwargs.get("filename"),
+            mime_type=kwargs.get("mime_type"),
+            celebrant=kwargs.get("celebrant"),
+            photographer=kwargs.get("photographer"),
+            celebration_id=kwargs.get("celebration_id"),
+        )
+        job_id = call.object_id
+        logger.info(f"[Modal] Dispatched import_drive_image job: {job_id}")
         return job_id
 
     else:
