@@ -9,7 +9,7 @@ from models import WeddingImage, FaceVector, Celebration
 router = APIRouter(prefix="/{photographer}/{celebrant}/images", tags=["images"])
 
 @router.get("")
-def list_images(skip: int = 0, limit: int = 100, status: str | None = None, celebrant: str = "", photographer: str = "", db: Session = Depends(get_db)):
+def list_images(skip: int = 0, limit: int = 100, status: str | None = None, sort: str = "date", celebrant: str = "", photographer: str = "", db: Session = Depends(get_db)):
     celebration = db.query(Celebration).filter(
         Celebration.celebrant == celebrant,
         Celebration.photographer == photographer
@@ -23,11 +23,18 @@ def list_images(skip: int = 0, limit: int = 100, status: str | None = None, cele
         q = q.filter(WeddingImage.processed == status)
 
     q = q.filter(WeddingImage.celebration_id == celebration.id)
-    
+
+    # Pinned photos (order_number set) always come first. The rest sort by
+    # filename when sort=="name", otherwise by upload date.
+    secondary = (
+        WeddingImage.filename.asc()
+        if sort == "name"
+        else WeddingImage.upload_date.asc()
+    )
     q = q.options(selectinload(WeddingImage.faces)).order_by(
         WeddingImage.order_number.is_(None),
         WeddingImage.order_number.asc().nulls_last(),
-        WeddingImage.upload_date.asc()
+        secondary,
     )
     
     imgs = (
