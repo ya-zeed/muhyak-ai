@@ -132,9 +132,11 @@ def update_image_order(
     photographer: str,
     celebrant: str,
     image_id: str = Path(...),
-    order_number: int = Body(..., embed=True),
+    order_number: int | None = Body(..., embed=True),
     db: Session = Depends(get_db),
 ):
+    """Set an image's order_number. Pass null to un-feature (drop it back to the
+    default upload-date ordering)."""
     celebration = db.query(Celebration).filter(
         Celebration.celebrant == celebrant,
         Celebration.photographer == photographer
