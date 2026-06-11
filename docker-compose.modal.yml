@@ -21,6 +21,11 @@ services:
       - INSIGHTFACE_MODEL=buffalo_l
       - DET_SIZE_W=640
       - DET_SIZE_H=640
+    # Mount the source over the baked code so a code change is just
+    # `git pull && docker compose ... restart api` — no slow image rebuild
+    # (pip/models stay in the image, outside /app).
+    volumes:
+      - ./:/app
     depends_on:
       db:
         condition: service_healthy
