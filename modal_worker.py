@@ -370,6 +370,7 @@ def import_drive_image(
     """
     import os
     import io
+    import time
     import uuid
     import json
     import hashlib
@@ -447,15 +448,30 @@ def import_drive_image(
         return f"https://{bucket}.s3.amazonaws.com/{key}"
 
     try:
-        # ── Download original from Drive ───────────────────
+        # ── Download original from Drive (auto-retry) ──────
+        # Drive throttles bursts of parallel downloads (429/5xx) and
+        # connections time out. Retry transient failures with exponential
+        # backoff so images heal themselves instead of being marked failed.
         params = urllib.parse.urlencode({"alt": "media", "key": api_key})
         url = f"https://www.googleapis.com/drive/v3/files/{file_id}?{params}"
-        with urllib.request.urlopen(url, timeout=120) as resp:
-            raw = resp.read()
+        raw = b""
+        last_err = "empty_download"
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(url, timeout=120) as resp:
+                    raw = resp.read()
+                if raw:
+                    break
+                last_err = "empty_download"
+            except Exception as e:  # noqa: BLE001 — retry any transient error
+                last_err = str(e)
+                logger.warning(f"Drive download attempt {attempt + 1} failed for {filename}: {last_err}")
+            if attempt < 4:
+                time.sleep(min(2 ** (attempt + 1), 20))  # 2,4,8,16s
 
         if not raw:
             _progress(failed=True)
-            return {"status": "failed", "reason": "empty_download"}
+            return {"status": "failed", "reason": f"download_failed: {last_err}"}
 
         file_hash = hashlib.sha256(raw).hexdigest()
         existing = db.query(WeddingImage).filter(WeddingImage.file_hash == file_hash).first()

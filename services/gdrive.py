@@ -7,9 +7,13 @@ from __future__ import annotations
 
 import io
 import json
+import time
+import logging
 import urllib.parse
 import urllib.request
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from PIL import Image, ImageOps
 
@@ -43,12 +47,32 @@ def list_folder_images(folder_id: str, api_key: str) -> list[dict[str, Any]]:
     return files
 
 
-def download_drive_file(file_id: str, api_key: str, timeout: int = 120) -> bytes:
-    """Download a single Drive file's bytes."""
+def download_drive_file(
+    file_id: str, api_key: str, timeout: int = 120, attempts: int = 5
+) -> bytes:
+    """Download a single Drive file's bytes, auto-retrying transient failures.
+
+    Drive throttles bursts of parallel downloads (429/5xx) and connections
+    time out; retry with exponential backoff so images heal themselves instead
+    of failing the import.
+    """
     params = urllib.parse.urlencode({"alt": "media", "key": api_key})
     url = f"{DRIVE_API_BASE}/files/{file_id}?{params}"
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        return resp.read()
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                data = resp.read()
+            if data:
+                return data
+        except Exception as e:  # noqa: BLE001 — retry any transient error
+            last_err = e
+            logger.warning("Drive download attempt %d failed: %s", attempt + 1, e)
+        if attempt < attempts - 1:
+            time.sleep(min(2 ** (attempt + 1), 20))  # 2,4,8,16s
+    if last_err:
+        raise last_err
+    raise RuntimeError("empty download from Drive")
 
 
 def compress_image(raw: bytes, max_edge: int = 2048, quality: int = 72) -> bytes:
