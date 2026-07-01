@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from db import get_db
-from models import Celebration
+from models import Celebration, WeddingImage
 from jobs.dispatcher import dispatch_job
 from services import redis_client
 from services.gdrive import list_folder_images
@@ -52,7 +52,25 @@ def start_import(
         raise HTTPException(400, "تعذر الوصول للمجلد. تأكد أن المجلد عام (Public)")
 
     cid = str(celebration.id)
-    total = len(files)
+
+    # Skip files already imported (matched by output filename) so re-running the
+    # import only processes what's missing — a cheap retry of failed items
+    # instead of re-dispatching (and re-billing on Modal) every image.
+    existing = {
+        name
+        for (name,) in db.query(WeddingImage.filename)
+        .filter(WeddingImage.celebration_id == celebration.id)
+        .all()
+    }
+
+    def _out_name(name: str) -> str:
+        return name.rsplit(".", 1)[0] + ".jpg"
+
+    pending = [
+        f for f in files if _out_name(f.get("name", "image.jpg")) not in existing
+    ]
+    skipped = len(files) - len(pending)
+    total = len(pending)
 
     try:
         redis_client.set(_progress_key(cid, "total"), total, ex=86400)
@@ -62,7 +80,7 @@ def start_import(
         logger.warning("Could not init gdrive import progress", exc_info=True)
 
     def _dispatch_all():
-        for f in files:
+        for f in pending:
             try:
                 dispatch_job(
                     "import_drive_image",
@@ -81,8 +99,12 @@ def start_import(
 
     return {
         "queued": total,
+        "skipped": skipped,
         "celebration_id": cid,
-        "message": f"Queued {total} images for import via {settings.WORKER_BACKEND}.",
+        "message": (
+            f"Queued {total} images ({skipped} already imported, skipped) "
+            f"via {settings.WORKER_BACKEND}."
+        ),
     }
 
 
