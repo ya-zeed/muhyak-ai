@@ -214,6 +214,11 @@ def process_image(
         embedding_model = Column(String(40))
         created_date = Column(DateTime, default=datetime.utcnow)
 
+    # Track the persisted image id so a mid-processing failure can flip the row
+    # to "failed" instead of leaving it stuck in "processing" forever (invisible
+    # in search — a guest would wrongly conclude they're in no photos).
+    img_id = None
+
     try:
         if not image_bytes:
             logger.warning(f"Empty content for {filename}")
@@ -257,6 +262,7 @@ def process_image(
         db.add(img)
         db.commit()
         db.refresh(img)
+        img_id = img.id
 
         logger.info(f"Added {filename}, starting face detection...")
 
@@ -341,6 +347,15 @@ def process_image(
     except Exception as e:
         logger.exception(f"Failed to handle {filename}: {e}")
         db.rollback()
+        # Mark the persisted row failed so it doesn't hang in "processing".
+        if img_id is not None:
+            try:
+                db.query(WeddingImage).filter(WeddingImage.id == img_id).update(
+                    {"processed": "failed"}
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
         return {"status": "failed", "reason": str(e)}
     finally:
         db.close()
