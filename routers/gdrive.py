@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -56,19 +57,29 @@ def start_import(
     # Skip files already imported (matched by output filename) so re-running the
     # import only processes what's missing — a cheap retry of failed items
     # instead of re-dispatching (and re-billing on Modal) every image.
-    existing = {
+    #
+    # Counted rather than matched as a set: now that the walk descends into
+    # subfolders, repeated filenames are the norm (three cameras all producing
+    # DSC_0001.jpg), and a set would let one imported copy stand in for all of
+    # them. Over-dispatching costs a download the worker throws away on its
+    # content-hash check; under-dispatching loses a photo with no error.
+    remaining = Counter(
         name
         for (name,) in db.query(WeddingImage.filename)
         .filter(WeddingImage.celebration_id == celebration.id)
         .all()
-    }
+    )
 
     def _out_name(name: str) -> str:
         return name.rsplit(".", 1)[0] + ".jpg"
 
-    pending = [
-        f for f in files if _out_name(f.get("name", "image.jpg")) not in existing
-    ]
+    pending = []
+    for f in files:
+        out = _out_name(f.get("name", "image.jpg"))
+        if remaining[out] > 0:
+            remaining[out] -= 1
+            continue
+        pending.append(f)
     skipped = len(files) - len(pending)
     total = len(pending)
 
