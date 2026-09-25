@@ -346,26 +346,20 @@ def process_image(
         db.close()
 
 
-@app.function(
-    memory=3072,
-    cpu=2.0,
-    timeout=600,
-    secrets=secrets,
-    retries=2,
-)
-def import_drive_image(
-    file_id: str,
-    api_key: str,
+def _import_image(
+    fetch,
     filename: str,
     mime_type: str,
     celebrant: str,
     photographer: str,
     celebration_id: str,
+    progress_prefix: str,
 ) -> dict:
     """
-    Import one image straight from Google Drive — no round-trip through the app
-    server. Stores the full-resolution original as file_path and a downscaled
-    JPEG as compressed_file_path; faces run on the compressed image so bbox
+    Shared by the Drive and Google Photos imports (runs inside their Modal
+    functions). `fetch()` returns (raw_bytes, last_error). Stores the
+    full-resolution original as file_path and a downscaled JPEG as
+    compressed_file_path; faces run on the compressed image so bbox
     coordinates match what the gallery displays.
     """
     import os
@@ -431,11 +425,11 @@ def import_drive_image(
 
     def _progress(failed: bool = False):
         try:
-            redis_client.incr(f"gdrive_import:{celebration_id}:done")
-            redis_client.expire(f"gdrive_import:{celebration_id}:done", 86400)
+            redis_client.incr(f"{progress_prefix}:{celebration_id}:done")
+            redis_client.expire(f"{progress_prefix}:{celebration_id}:done", 86400)
             if failed:
-                redis_client.incr(f"gdrive_import:{celebration_id}:failed")
-                redis_client.expire(f"gdrive_import:{celebration_id}:failed", 86400)
+                redis_client.incr(f"{progress_prefix}:{celebration_id}:failed")
+                redis_client.expire(f"{progress_prefix}:{celebration_id}:failed", 86400)
         except Exception:
             pass
 
@@ -448,27 +442,7 @@ def import_drive_image(
         return f"https://{bucket}.s3.amazonaws.com/{key}"
 
     try:
-        # ── Download original from Drive (auto-retry) ──────
-        # Drive throttles bursts of parallel downloads (429/5xx) and
-        # connections time out. Retry transient failures with exponential
-        # backoff so images heal themselves instead of being marked failed.
-        params = urllib.parse.urlencode({"alt": "media", "key": api_key})
-        url = f"https://www.googleapis.com/drive/v3/files/{file_id}?{params}"
-        raw = b""
-        last_err = "empty_download"
-        for attempt in range(5):
-            try:
-                with urllib.request.urlopen(url, timeout=120) as resp:
-                    raw = resp.read()
-                if raw:
-                    break
-                last_err = "empty_download"
-            except Exception as e:  # noqa: BLE001 — retry any transient error
-                last_err = str(e)
-                logger.warning(f"Drive download attempt {attempt + 1} failed for {filename}: {last_err}")
-            if attempt < 4:
-                time.sleep(min(2 ** (attempt + 1), 20))  # 2,4,8,16s
-
+        raw, last_err = fetch()
         if not raw:
             _progress(failed=True)
             return {"status": "failed", "reason": f"download_failed: {last_err}"}
@@ -578,12 +552,121 @@ def import_drive_image(
         return {"status": "completed", "image_id": str(img.id), "faces_count": len(face_data)}
 
     except Exception as e:
-        logger.exception(f"Drive import failed for {filename}: {e}")
+        logger.exception(f"{progress_prefix} failed for {filename}: {e}")
         db.rollback()
         _progress(failed=True)
         return {"status": "failed", "reason": str(e)}
     finally:
         db.close()
+
+
+
+
+@app.function(
+    memory=3072,
+    cpu=2.0,
+    timeout=600,
+    secrets=secrets,
+    retries=2,
+)
+def import_drive_image(
+    file_id: str,
+    api_key: str,
+    filename: str,
+    mime_type: str,
+    celebrant: str,
+    photographer: str,
+    celebration_id: str,
+) -> dict:
+    """Import one image straight from Google Drive — no round-trip through the
+    app server."""
+    import time
+    import logging
+    import urllib.parse
+    import urllib.request
+
+    logger = logging.getLogger(__name__)
+
+    def fetch():
+        # Auto-retry: hosts throttle bursts of parallel downloads (429/5xx)
+        # and connections time out, so images heal themselves instead of
+        # being marked failed.
+        params = urllib.parse.urlencode({"alt": "media", "key": api_key})
+        req = f"https://www.googleapis.com/drive/v3/files/{file_id}?{params}"
+        raw = b""
+        last_err = "empty_download"
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    raw = resp.read()
+                if raw:
+                    return raw, None
+                last_err = "empty_download"
+            except Exception as e:  # noqa: BLE001 — retry any transient error
+                last_err = str(e)
+                logger.warning(f"Drive download attempt {attempt + 1} failed for {filename}: {last_err}")
+            if attempt < 4:
+                time.sleep(min(2 ** (attempt + 1), 20))  # 2,4,8,16s
+        return b"", last_err
+
+    logging.basicConfig(level=logging.INFO)
+    return _import_image(
+        fetch, filename, mime_type, celebrant, photographer, celebration_id,
+        progress_prefix="gdrive_import",
+    )
+
+
+@app.function(
+    memory=3072,
+    cpu=2.0,
+    timeout=600,
+    secrets=secrets,
+    retries=2,
+)
+def import_gphotos_image(
+    url: str,
+    filename: str,
+    celebrant: str,
+    photographer: str,
+    celebration_id: str,
+) -> dict:
+    """Import one photo from a shared Google Photos album (full-size JPEG URL
+    resolved by services.gphotos.list_album_images)."""
+    import time
+    import logging
+    import urllib.request
+
+    logger = logging.getLogger(__name__)
+
+    def fetch():
+        # Auto-retry: hosts throttle bursts of parallel downloads (429/5xx)
+        # and connections time out, so images heal themselves instead of
+        # being marked failed.
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/jpeg,image/*;q=0.8",
+        })
+        raw = b""
+        last_err = "empty_download"
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    raw = resp.read()
+                if raw:
+                    return raw, None
+                last_err = "empty_download"
+            except Exception as e:  # noqa: BLE001 — retry any transient error
+                last_err = str(e)
+                logger.warning(f"Google Photos download attempt {attempt + 1} failed for {filename}: {last_err}")
+            if attempt < 4:
+                time.sleep(min(2 ** (attempt + 1), 20))  # 2,4,8,16s
+        return b"", last_err
+
+    logging.basicConfig(level=logging.INFO)
+    return _import_image(
+        fetch, filename, "image/jpeg", celebrant, photographer, celebration_id,
+        progress_prefix="gphotos_import",
+    )
 
 
 @app.function(

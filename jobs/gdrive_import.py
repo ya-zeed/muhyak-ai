@@ -17,29 +17,32 @@ from services.gdrive import download_drive_file, compress_image
 logger = logging.getLogger(__name__)
 
 
-def _progress_incr(celebration_id: str, failed: bool = False) -> None:
+def _progress_incr(celebration_id: str, failed: bool = False, prefix: str = "gdrive_import") -> None:
     try:
-        redis_client.incr(f"gdrive_import:{celebration_id}:done")
-        redis_client.expire(f"gdrive_import:{celebration_id}:done", 86400)
+        redis_client.incr(f"{prefix}:{celebration_id}:done")
+        redis_client.expire(f"{prefix}:{celebration_id}:done", 86400)
         if failed:
-            redis_client.incr(f"gdrive_import:{celebration_id}:failed")
-            redis_client.expire(f"gdrive_import:{celebration_id}:failed", 86400)
+            redis_client.incr(f"{prefix}:{celebration_id}:failed")
+            redis_client.expire(f"{prefix}:{celebration_id}:failed", 86400)
     except Exception:
-        logger.warning("failed to update gdrive import progress", exc_info=True)
+        logger.warning("failed to update %s progress", prefix, exc_info=True)
 
 
-def import_drive_image_job(
-    file_id: str,
-    api_key: str,
+def import_image_bytes(
+    download,
     filename: str,
     mime_type: str,
     celebrant: str,
     photographer: str,
     celebration_id: str,
+    progress_prefix: str,
 ) -> None:
+    """Shared by the Drive and Google Photos imports: download via `download()`,
+    skip duplicates, store original + compressed copies, detect faces, and
+    count progress under `progress_prefix`."""
     db = SessionLocal()
     try:
-        raw = download_drive_file(file_id, api_key)
+        raw = download()
         file_hash = calculate_file_hash(raw)
 
         existing = db.query(WeddingImage).filter(
@@ -47,7 +50,7 @@ def import_drive_image_job(
         ).first()
         if existing:
             logger.info(f"🟡 Skipped duplicate {filename}")
-            _progress_incr(celebration_id)
+            _progress_incr(celebration_id, prefix=progress_prefix)
             return
 
         compressed = compress_image(raw)
@@ -95,11 +98,31 @@ def import_drive_image_job(
         db.commit()
 
         logger.info(f"✅ Imported {out_name} ({len(faces)} faces)")
-        _progress_incr(celebration_id)
+        _progress_incr(celebration_id, prefix=progress_prefix)
 
     except Exception as e:
-        logger.exception(f"❌ Drive import failed for {filename}: {e}")
+        logger.exception(f"❌ {progress_prefix} failed for {filename}: {e}")
         db.rollback()
-        _progress_incr(celebration_id, failed=True)
+        _progress_incr(celebration_id, failed=True, prefix=progress_prefix)
     finally:
         db.close()
+
+
+def import_drive_image_job(
+    file_id: str,
+    api_key: str,
+    filename: str,
+    mime_type: str,
+    celebrant: str,
+    photographer: str,
+    celebration_id: str,
+) -> None:
+    import_image_bytes(
+        lambda: download_drive_file(file_id, api_key),
+        filename,
+        mime_type,
+        celebrant,
+        photographer,
+        celebration_id,
+        progress_prefix="gdrive_import",
+    )

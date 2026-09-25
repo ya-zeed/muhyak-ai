@@ -41,6 +41,7 @@ def _dispatch_rq(job_type: str, **kwargs) -> str:
         "quality_analysis": "services.quality_analyzer.analyze_celebration_job",
         "reprocess_image": "jobs.reprocess.reprocess_image_job",
         "import_drive_image": "jobs.gdrive_import.import_drive_image_job",
+        "import_gphotos_image": "jobs.gphotos_import.import_gphotos_image_job",
     }
 
     func_path = job_mapping.get(job_type)
@@ -77,6 +78,16 @@ def _dispatch_rq(job_type: str, **kwargs) -> str:
             kwargs.get("api_key"),
             kwargs.get("filename"),
             kwargs.get("mime_type"),
+            kwargs.get("celebrant"),
+            kwargs.get("photographer"),
+            kwargs.get("celebration_id"),
+            job_timeout=600,
+        )
+    elif job_type == "import_gphotos_image":
+        job = queue.enqueue(
+            func_path,
+            kwargs.get("url"),
+            kwargs.get("filename"),
             kwargs.get("celebrant"),
             kwargs.get("photographer"),
             kwargs.get("celebration_id"),
@@ -144,6 +155,19 @@ def _dispatch_modal(job_type: str, **kwargs) -> str:
         )
         job_id = call.object_id
         logger.info(f"[Modal] Dispatched import_drive_image job: {job_id}")
+        return job_id
+
+    elif job_type == "import_gphotos_image":
+        import_fn = modal.Function.from_name(app_name, "import_gphotos_image")
+        call = import_fn.spawn(
+            url=kwargs.get("url"),
+            filename=kwargs.get("filename"),
+            celebrant=kwargs.get("celebrant"),
+            photographer=kwargs.get("photographer"),
+            celebration_id=kwargs.get("celebration_id"),
+        )
+        job_id = call.object_id
+        logger.info(f"[Modal] Dispatched import_gphotos_image job: {job_id}")
         return job_id
 
     else:
